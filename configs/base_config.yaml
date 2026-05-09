@@ -1,0 +1,15 @@
+defaults:
+  - prefix_tb_hypergrid
+  - _self_
+
+seed: 0
+use_jit: True
+use_comet: True
+batch_size: 1
+eval_frequency: 300
+
+comet:
+  api_key: ${oc.env:COMETML_API_KEY}
+  project_name: gfn_ot
+  workspace: ${oc.env:COMETML_WORKSPACE}
+  exp_name: ""
