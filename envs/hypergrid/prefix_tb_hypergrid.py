@@ -159,7 +159,7 @@ def per_sample_get_train_rollout(
         _, log_pb_dist, _ = model_state.apply_fn(params, state_next)
         log_pb = log_pb_dist[action]
         data_next = (state_next, key_gen)
-        per_step_output = (state, log_pf, log_pb, log_flow, log_reward)
+        per_step_output = (log_pf, log_pb, log_flow, log_reward)
         return data_next, per_step_output
 
     def simulate_backward_rollout(data, per_step_input):
@@ -175,7 +175,7 @@ def per_sample_get_train_rollout(
         log_pf_dist, _, log_flow = model_state.apply_fn(params, state, log_reward)
         log_pf = log_pf_dist[action]
         data_next = (state, key_gen)
-        per_step_output = (state, log_pf, log_pb, log_flow, log_reward)
+        per_step_output = (log_pf, log_pb, log_flow, log_reward)
         return data_next, per_step_output
 
     if is_forward_rollout:
@@ -191,9 +191,10 @@ def per_sample_get_train_rollout(
         aux, per_step_output = jax.lax.scan(
             simulate_backward_rollout, aux, jnp.arange(rollout_max_length)[::-1]
         )
+        init_state, _ = aux
 
-    trajectory, log_pf, log_pb, log_flow, log_reward = per_step_output
-    return terminal_state, trajectory, log_pf, log_pb, log_flow, log_reward
+    log_pf, log_pb, log_flow, log_reward = per_step_output
+    return terminal_state, init_state, log_pf, log_pb, log_flow, log_reward
 
 
 def get_train_rollout(
@@ -218,7 +219,7 @@ def get_train_rollout(
     keys = jax.random.split(key_gen, num=batch_size)
     (
         terminal_states,
-        trajectories,
+        init_states,
         log_pfs,
         log_pbs,
         log_flows,
@@ -236,18 +237,16 @@ def get_train_rollout(
         is_forward_rollout,
     )
     if not is_forward_rollout:
-        trajectories = trajectories[:, ::-1]
         log_pfs = log_pfs[:, ::-1]
         log_pbs = log_pbs[:, ::-1]
         log_flows = log_flows[:, ::-1]
         log_rewards = log_rewards[:, ::-1]
-    trajectories = jnp.concatenate([trajectories, terminal_states[:, None]], axis=1)
     # We need to account transition (s0, s1) and calculate log probs for it
     log_pfs = jnp.concatenate(
-        [initial_dist_log_prob_fn(trajectories[:, 0])[:, None], log_pfs], axis=1
+        [initial_dist_log_prob_fn(init_states)[:, None], log_pfs], axis=1
     )
     _, log_pb_initial, _ = model_state.apply_fn(
-        params, jax.lax.stop_gradient(trajectories[:, 0]), log_rewards[:, 0]
+        params, jax.lax.stop_gradient(init_states), log_rewards[:, 0]
     )
     log_pbs = jnp.concatenate([log_pb_initial[..., -1][:, None], log_pbs], axis=1)
     # We need to calculate log flow for the last non-terminal state
@@ -261,7 +260,7 @@ def get_train_rollout(
     log_rewards = jnp.concatenate([log_rewards, terminal_log_rewards[:, None]], axis=1)
     log_pfs_over_pbs = log_pfs - log_pbs
 
-    return (trajectories, log_pfs_over_pbs, log_rewards, log_flows)
+    return (terminal_states, log_pfs_over_pbs, log_rewards, log_flows)
 
 
 def prefix_tb_loss_fn(
@@ -272,7 +271,7 @@ def prefix_tb_loss_fn(
     reg_coef: float = 0.0,
     use_weights: bool = False,
 ):
-    trajectories, log_pfs_over_pbs, log_rewards, log_flows = get_train_rollout_fn(
+    terminal_states, log_pfs_over_pbs, log_rewards, log_flows = get_train_rollout_fn(
         key, model_state, params
     )
     batch_size, rollout_length = log_pfs_over_pbs.shape
@@ -304,7 +303,7 @@ def prefix_tb_loss_fn(
     flow_penalties = reg_coef * jnp.exp(log_flows) * weights
     losses = tb_losses.sum(-1) + flow_penalties.sum(-1)
     return jnp.mean(losses), (
-        trajectories[:, -1],
+        terminal_states,
         log_rewards[:, -1],
         jax.lax.stop_gradient(losses),
     )
@@ -406,6 +405,7 @@ def get_eval_fn(get_eval_rollout_fn, env, true_dist, cfg):
     get_eval_forward_rollout = jax.jit(get_eval_rollout_fn)
 
     logger = {"tv": [], "traj_length/max": [], "traj_length/mean": []}
+    all_samples = None
 
     def short_eval(model_state, key):
         if isinstance(model_state, tuple):
@@ -419,7 +419,15 @@ def get_eval_fn(get_eval_rollout_fn, env, true_dist, cfg):
         terminal_states = trajectories[
             jnp.arange(trajectories.shape[0]), trajectories_length - 1
         ]
-        empirical_dist = compute_empirical_dist(terminal_states, env.dim, env.side)
+        nonlocal all_samples
+        if all_samples is None:
+            all_samples = terminal_states
+        else:
+            all_samples = jnp.concatenate([all_samples, terminal_states], axis=0)
+
+        empirical_dist = compute_empirical_dist(
+            all_samples[-200000:], env.dim, env.side
+        )
         tv = jnp.abs(true_dist - empirical_dist).sum()
         logger["tv"].append(tv)
         logger["traj_length/max"].append(jnp.max(trajectories_length))
@@ -442,7 +450,6 @@ def prefix_tb_hypergrid_trainer(cfg, comet_exp=None):
     batch_size = cfg.batch_size
     train_rollout_max_length = cfg.train_rollout_max_length
     eval_rollout_max_length = cfg.eval_rollout_max_length
-    eval_num_samples = cfg.eval_num_samples
 
     key, key_gen = jax.random.split(key_gen)
     model_state = init_model(key, cfg)
@@ -479,7 +486,7 @@ def prefix_tb_hypergrid_trainer(cfg, comet_exp=None):
     get_eval_rollout_base = partial(
         get_eval_rollout,
         env=env,
-        batch_size=eval_num_samples,
+        batch_size=batch_size,
         rollout_max_length=eval_rollout_max_length,
         initial_dist=initial_dist,
     )
@@ -582,7 +589,9 @@ def prefix_tb_hypergrid_trainer(cfg, comet_exp=None):
             if use_buffer:
                 key, key_gen = jax.random.split(key_gen)
                 buffer_terminal_states, _, _ = buffer.sample(
-                    buffer_state, key, cfg.eval_num_samples
+                    buffer_state,
+                    key,
+                    batch_size,
                 )
                 buffer_empirical_dist = compute_empirical_dist(
                     buffer_terminal_states, env.dim, env.side

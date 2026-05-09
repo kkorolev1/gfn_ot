@@ -5,8 +5,8 @@ defaults:
 seed: 0
 use_jit: True
 use_comet: True
-batch_size: 1
-eval_frequency: 300
+batch_size: 512
+eval_frequency: 200
 
 comet:
   api_key: ${oc.env:COMETML_API_KEY}

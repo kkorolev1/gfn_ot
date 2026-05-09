@@ -6,9 +6,8 @@ env:
   side: 10
 
 train_rollout_max_length: 500
-train_num_steps: 20000
+train_num_steps: 100000
 
-eval_num_samples: 2000
 eval_rollout_max_length: 5000
 
 init_logZ: 0.0
