@@ -405,7 +405,6 @@ def get_eval_fn(get_eval_rollout_fn, env, true_dist, cfg):
     get_eval_forward_rollout = jax.jit(get_eval_rollout_fn)
 
     logger = {"tv": [], "traj_length/max": [], "traj_length/mean": []}
-    all_samples = None
 
     def short_eval(model_state, key):
         if isinstance(model_state, tuple):
@@ -419,13 +418,8 @@ def get_eval_fn(get_eval_rollout_fn, env, true_dist, cfg):
         terminal_states = trajectories[
             jnp.arange(trajectories.shape[0]), trajectories_length - 1
         ]
-        nonlocal all_samples
-        if all_samples is None:
-            all_samples = terminal_states
-        else:
-            all_samples = jnp.concatenate([all_samples, terminal_states], axis=0)
 
-        empirical_dist = compute_empirical_dist(all_samples[-10000:], env.dim, env.side)
+        empirical_dist = compute_empirical_dist(terminal_states, env.dim, env.side)
         tv = jnp.abs(true_dist - empirical_dist).sum()
         logger["tv"].append(tv)
         logger["traj_length/max"].append(jnp.max(trajectories_length))
@@ -453,9 +447,9 @@ def prefix_tb_hypergrid_trainer(cfg, comet_exp=None):
     model_state = init_model(key, cfg)
 
     true_rewards = env.get_grid_rewards()
-    true_logZ = jnp.sum(true_rewards)
-    true_dist = true_rewards / true_logZ
-    print(f"True logZ: {true_logZ:.4f}")
+    true_Z = jnp.sum(true_rewards)
+    true_dist = true_rewards / true_Z
+    print(f"True logZ: {jnp.log(true_Z):.4f}")
 
     def get_initial_dist(r_inner=0.32, r_outer=0.45, offset=0.25):
         # Uniform initial distribution

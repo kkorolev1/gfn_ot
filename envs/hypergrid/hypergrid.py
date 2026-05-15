@@ -97,4 +97,7 @@ class Hypergrid:
 
 if __name__ == "__main__":
     env = Hypergrid(2, 10)
-    env.visualize(env.get_grid_rewards(), show=True)
+    true_rewards = env.get_grid_rewards()
+    true_Z = jnp.sum(true_rewards)
+    print(f"True logZ: {jnp.log(true_Z):.4f}")
+    env.visualize(true_rewards, show=True)
