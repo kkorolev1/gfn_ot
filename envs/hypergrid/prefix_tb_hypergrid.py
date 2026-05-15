@@ -425,9 +425,7 @@ def get_eval_fn(get_eval_rollout_fn, env, true_dist, cfg):
         else:
             all_samples = jnp.concatenate([all_samples, terminal_states], axis=0)
 
-        empirical_dist = compute_empirical_dist(
-            all_samples[-200000:], env.dim, env.side
-        )
+        empirical_dist = compute_empirical_dist(all_samples[-10000:], env.dim, env.side)
         tv = jnp.abs(true_dist - empirical_dist).sum()
         logger["tv"].append(tv)
         logger["traj_length/max"].append(jnp.max(trajectories_length))
@@ -459,17 +457,53 @@ def prefix_tb_hypergrid_trainer(cfg, comet_exp=None):
     true_dist = true_rewards / true_logZ
     print(f"True logZ: {true_logZ:.4f}")
 
-    def get_initial_dist():
-        def sample(key, sample_shape=()):
-            return jax.random.randint(
-                key,
-                shape=(*sample_shape, env.dim),
-                minval=0,
-                maxval=env.side,
-            )
+    def get_initial_dist(r_inner=0.32, r_outer=0.45, offset=0.25):
+        # Uniform initial distribution
+        # def sample(key, sample_shape=()):
+        #     return jax.random.randint(
+        #         key,
+        #         shape=(*sample_shape, env.dim),
+        #         minval=0,
+        #         maxval=env.side,
+        #     )
+
+        # def log_prob(states):
+        #     return -env.dim * jnp.log(env.side * jnp.ones(states.shape[:-1]))
+
+        # Moon initial distribution
+        side, dim = env.side, env.dim
 
         def log_prob(states):
-            return -env.dim * jnp.log(env.side * jnp.ones(states.shape[:-1]))
+            z = states.astype(jnp.float64) / (side - 1)
+
+            c = jnp.full((dim,), 0.5, dtype=jnp.float64)
+            e1 = jnp.zeros((dim,), dtype=jnp.float64).at[0].set(1.0)
+
+            in_outer = jnp.sum((z - c) ** 2, axis=1) <= r_outer**2
+            in_inner = jnp.sum((z - (c - offset * e1)) ** 2, axis=1) <= r_inner**2
+            moon = jnp.logical_and(in_outer, jnp.logical_not(in_inner))
+
+            back = c + (r_outer / 2.0) * e1
+            arc_dist = jnp.linalg.norm(z - back, axis=1)
+
+            centeredness = jnp.clip(1.0 - arc_dist / r_outer, 0.0, 1.0)
+            prob = moon.astype(jnp.float64) * (0.5 + 2.0 * centeredness) + 1e-3
+            return jnp.log(prob)
+
+        ranges = [jnp.arange(side, dtype=jnp.int32) for _ in range(dim)]
+        mesh = jnp.meshgrid(*ranges, indexing="ij")
+        all_states = jnp.stack(mesh, axis=-1).reshape(-1, dim)
+
+        logprobs = log_prob(all_states)
+        weights = jnp.exp(logprobs)
+        probs = weights / jnp.sum(weights)
+
+        def sample(key, sample_shape=()):
+            flat_indices = jax.random.choice(
+                key, all_states.shape[0], shape=sample_shape, replace=True, p=probs
+            )
+            sampled_states = all_states[flat_indices]
+            return sampled_states
 
         return sample, log_prob
 
