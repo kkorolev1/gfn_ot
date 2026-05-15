@@ -468,20 +468,20 @@ def prefix_tb_hypergrid_trainer(cfg, comet_exp=None):
         side, dim = env.side, env.dim
 
         def log_prob(states):
-            z = states.astype(jnp.float64) / (side - 1)
+            z = states.astype(jnp.float32) / (side - 1)
 
-            c = jnp.full((dim,), 0.5, dtype=jnp.float64)
-            e1 = jnp.zeros((dim,), dtype=jnp.float64).at[0].set(1.0)
+            c = jnp.full((dim,), 0.5, dtype=jnp.float32)
+            e1 = jnp.zeros((dim,), dtype=jnp.float32).at[0].set(1.0)
 
-            in_outer = jnp.sum((z - c) ** 2, axis=1) <= r_outer**2
-            in_inner = jnp.sum((z - (c - offset * e1)) ** 2, axis=1) <= r_inner**2
+            in_outer = jnp.sum((z - c) ** 2, axis=-1) <= r_outer**2
+            in_inner = jnp.sum((z - (c - offset * e1)) ** 2, axis=-1) <= r_inner**2
             moon = jnp.logical_and(in_outer, jnp.logical_not(in_inner))
 
             back = c + (r_outer / 2.0) * e1
-            arc_dist = jnp.linalg.norm(z - back, axis=1)
+            arc_dist = jnp.linalg.norm(z - back, axis=-1)
 
             centeredness = jnp.clip(1.0 - arc_dist / r_outer, 0.0, 1.0)
-            prob = moon.astype(jnp.float64) * (0.5 + 2.0 * centeredness) + 1e-3
+            prob = moon.astype(jnp.float32) * (0.5 + 2.0 * centeredness) + 1e-3
             return jnp.log(prob)
 
         ranges = [jnp.arange(side, dtype=jnp.int32) for _ in range(dim)]
