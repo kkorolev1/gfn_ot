@@ -467,7 +467,7 @@ def prefix_tb_hypergrid_trainer(cfg, comet_exp=None):
         # Moon initial distribution
         side, dim = env.side, env.dim
 
-        def log_prob(states):
+        def log_reward(states):
             z = states.astype(jnp.float32) / (side - 1)
 
             c = jnp.full((dim,), 0.5, dtype=jnp.float32)
@@ -486,18 +486,19 @@ def prefix_tb_hypergrid_trainer(cfg, comet_exp=None):
 
         ranges = [jnp.arange(side, dtype=jnp.int32) for _ in range(dim)]
         mesh = jnp.meshgrid(*ranges, indexing="ij")
-        all_states = jnp.stack(mesh, axis=-1).reshape(-1, dim)
-
-        logprobs = log_prob(all_states)
-        weights = jnp.exp(logprobs)
-        probs = weights / jnp.sum(weights)
+        grid = jnp.stack(mesh, axis=-1).reshape(-1, dim)
+        log_rewards = log_reward(grid)
+        log_Z = nn.logsumexp(log_rewards)
+        probs = jnp.exp(log_rewards - log_Z)
 
         def sample(key, sample_shape=()):
-            flat_indices = jax.random.choice(
-                key, all_states.shape[0], shape=sample_shape, replace=True, p=probs
+            indices = jax.random.choice(
+                key, grid.shape[0], shape=sample_shape, replace=True, p=probs
             )
-            sampled_states = all_states[flat_indices]
-            return sampled_states
+            return grid[indices]
+
+        def log_prob(states):
+            return log_reward(states) - log_Z
 
         return sample, log_prob
 
