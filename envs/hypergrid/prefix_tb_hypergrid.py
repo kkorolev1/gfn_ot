@@ -9,11 +9,11 @@ import equinox
 from flax.training.train_state import TrainState
 from flax.traverse_util import path_aware_map
 from functools import partial
-import matplotlib.pyplot as plt
 
 from envs.hypergrid.hypergrid import Hypergrid
 from envs.hypergrid.buffer import build_terminal_state_buffer
-from utils.helper import build_evaluation_buffer, extract_last_entry, log1mexp
+from utils.helper import build_evaluation_buffer, log1mexp
+from utils.experiment_logger import Logger
 
 
 class Model(flax_nn.Module):
@@ -427,6 +427,9 @@ def get_eval_fn(get_eval_rollout_fn, env, true_dist, cfg):
             logger[name].append(value)
         logger["traj_length/max"].append(jnp.max(trajectories_length))
         logger["traj_length/mean"].append(jnp.mean(trajectories_length))
+        logger["data/terminal_dist"] = [empirical_dist]
+        logger["data/terminal_states"] = [terminal_states]
+        logger["data/trajectory_lengths"] = [trajectories_length]
         logger.update(
             env.visualize(
                 empirical_dist,
@@ -438,7 +441,7 @@ def get_eval_fn(get_eval_rollout_fn, env, true_dist, cfg):
     return short_eval, logger
 
 
-def prefix_tb_hypergrid_trainer(cfg, comet_exp=None):
+def prefix_tb_hypergrid_trainer(cfg, experiment_logger: Logger):
     key_gen = jax.random.PRNGKey(cfg.seed)
 
     env: Hypergrid = cfg.env
@@ -453,6 +456,8 @@ def prefix_tb_hypergrid_trainer(cfg, comet_exp=None):
     true_Z = jnp.sum(true_rewards)
     true_dist = true_rewards / true_Z
     print(f"True logZ: {jnp.log(true_Z):.4f}")
+    experiment_logger.log_metrics({"logZ_true": jnp.log(true_Z)}, step=0)
+    experiment_logger.log_array("target_dist", true_dist, step=0)
 
     def get_initial_dist(r_inner=0.32, r_outer=0.45, offset=0.25):
         # Uniform initial distribution
@@ -568,8 +573,7 @@ def prefix_tb_hypergrid_trainer(cfg, comet_exp=None):
         f"Target vs target ({cfg.eval_buffer_size} samples per subset): "
         f"TV: {logger['target/tv'][-1]:.4f}"
     )
-    if cfg.use_comet:
-        comet_exp.log_metrics({"target/tv": logger["target/tv"][-1]}, step=0)
+    experiment_logger.log_metrics({"target/tv": logger["target/tv"][-1]}, step=0)
 
     for step in range(cfg.train_num_steps):
         if not use_buffer or step % (buffer_cfg.replay_ratio + 1) == 0:
@@ -594,7 +598,7 @@ def prefix_tb_hypergrid_trainer(cfg, comet_exp=None):
             )
 
             key, key_gen = jax.random.split(key_gen)
-            grads, _ = loss_bwd_grad_fn(
+            grads, (_, _, losses) = loss_bwd_grad_fn(
                 key,
                 model_state,
                 model_state.params,
@@ -603,21 +607,21 @@ def prefix_tb_hypergrid_trainer(cfg, comet_exp=None):
             )
             model_state = model_state.apply_gradients(grads=grads)
 
-        if cfg.use_comet:
-            comet_exp.log_metrics(
-                {
-                    "loss": jnp.mean(losses),
-                    "logZ_learned": model_state.params["params"]["logZ"],
-                },
-                step=step,
-            )
+        experiment_logger.log_metrics(
+            {
+                "loss": jnp.mean(losses),
+                "logZ_learned": model_state.params["params"]["logZ"],
+            },
+            step=step + 1,
+        )
 
         if (step % cfg.eval_frequency == 0) or (step == cfg.train_num_steps - 1):
             key, key_gen = jax.random.split(key_gen)
             logger.update(eval_fn(model_state, key))
+            experiment_logger.save_checkpoint(model_state)
 
             print(
-                f"[{step}/{cfg.train_num_steps}] "
+                f"[{step + 1}/{cfg.train_num_steps}] "
                 f"Loss: {jnp.mean(losses):.4f}, "
                 f"TV: {logger['tv'][-1]:.4f}, "
                 f"Max Len: {logger['traj_length/max'][-1]:.4f}, "
@@ -634,16 +638,11 @@ def prefix_tb_hypergrid_trainer(cfg, comet_exp=None):
                 buffer_empirical_dist = compute_empirical_dist(
                     buffer_terminal_states, env.dim, env.side
                 )
+                logger["data/buffer_empirical_dist"] = [buffer_empirical_dist]
                 logger.update(
                     env.visualize(buffer_empirical_dist, prefix="buffer_empirical_dist")
                 )
 
-            if cfg.use_comet:
-                last_entry = extract_last_entry(logger)
-                metrics = {}
-                for key, value in last_entry.items():
-                    if isinstance(value, plt.Figure):
-                        comet_exp.log_figure(figure=value, figure_name=key, step=step)
-                    else:
-                        metrics[key] = value
-                comet_exp.log_metrics(metrics, step=step)
+            experiment_logger.log_evaluation(logger, step=step + 1)
+
+    return model_state, logger

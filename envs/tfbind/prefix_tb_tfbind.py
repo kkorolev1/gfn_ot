@@ -9,11 +9,11 @@ import equinox
 from flax.training.train_state import TrainState
 from flax.traverse_util import path_aware_map
 from functools import partial
-import matplotlib.pyplot as plt
 
 from envs.tfbind.tfbind import TFBind8Environment
 from envs.tfbind.buffer import build_terminal_state_buffer
-from utils.helper import build_evaluation_buffer, extract_last_entry, log1mexp
+from utils.helper import build_evaluation_buffer, log1mexp
+from utils.experiment_logger import Logger
 
 
 class Model(flax_nn.Module):
@@ -408,6 +408,9 @@ def get_eval_fn(get_eval_rollout_fn, env, true_dist, cfg):
             logger[name].append(value)
         logger["traj_length/max"].append(jnp.max(trajectories_length))
         logger["traj_length/mean"].append(jnp.mean(trajectories_length))
+        logger["data/terminal_dist"] = [empirical_dist]
+        logger["data/terminal_states"] = [terminal_states]
+        logger["data/trajectory_lengths"] = [trajectories_length]
 
         logger.update(
             env.visualize(
@@ -420,7 +423,7 @@ def get_eval_fn(get_eval_rollout_fn, env, true_dist, cfg):
     return short_eval, logger
 
 
-def prefix_tb_tfbind_trainer(cfg, comet_exp=None):
+def prefix_tb_tfbind_trainer(cfg, experiment_logger: Logger):
     key_gen = jax.random.PRNGKey(cfg.seed)
 
     env: TFBind8Environment = cfg.env
@@ -435,6 +438,8 @@ def prefix_tb_tfbind_trainer(cfg, comet_exp=None):
     true_logZ = nn.logsumexp(true_log_rewards)
     true_dist = jnp.exp(true_log_rewards - true_logZ)
     print(f"True logZ: {true_logZ:.4f}")
+    experiment_logger.log_metrics({"logZ_true": true_logZ}, step=0)
+    experiment_logger.log_array("target_dist", true_dist, step=0)
 
     initial_dist = env.get_initial_dist()
 
@@ -505,6 +510,7 @@ def prefix_tb_tfbind_trainer(cfg, comet_exp=None):
     def evaluate(model_state, key, step, losses=None):
         eval_key, buffer_key = jax.random.split(key)
         logger.update(eval_fn(model_state, eval_key))
+        experiment_logger.save_checkpoint(model_state)
 
         loss_info = "" if losses is None else f"Loss: {jnp.mean(losses):.4f}, "
         print(
@@ -520,19 +526,12 @@ def prefix_tb_tfbind_trainer(cfg, comet_exp=None):
                 buffer_state, buffer_key, batch_size
             )
             buffer_empirical_dist = env.get_empirical_distribution(buffer_terminal_states)
+            logger["data/buffer_empirical_dist"] = [buffer_empirical_dist]
             logger.update(
                 env.visualize(buffer_empirical_dist, prefix="buffer_empirical_dist")
             )
 
-        if cfg.use_comet:
-            last_entry = extract_last_entry(logger)
-            metrics = {}
-            for name, value in last_entry.items():
-                if isinstance(value, plt.Figure):
-                    comet_exp.log_figure(figure=value, figure_name=name, step=step)
-                else:
-                    metrics[name] = value
-            comet_exp.log_metrics(metrics, step=step)
+        experiment_logger.log_evaluation(logger, step=step)
 
     key, key_gen = jax.random.split(key_gen)
     evaluate(model_state, key, step=0)
@@ -569,14 +568,13 @@ def prefix_tb_tfbind_trainer(cfg, comet_exp=None):
             )
             model_state = model_state.apply_gradients(grads=grads)
 
-        if cfg.use_comet:
-            comet_exp.log_metrics(
-                {
-                    "loss": jnp.mean(losses),
-                    "logZ_learned": model_state.params["params"]["logZ"],
-                },
-                step=step + 1,
-            )
+        experiment_logger.log_metrics(
+            {
+                "loss": jnp.mean(losses),
+                "logZ_learned": model_state.params["params"]["logZ"],
+            },
+            step=step + 1,
+        )
 
         if ((step + 1) % cfg.eval_frequency == 0) or (step == cfg.train_num_steps - 1):
             key, key_gen = jax.random.split(key_gen)

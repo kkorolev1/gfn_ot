@@ -4,7 +4,9 @@ defaults:
 
 seed: 0
 use_jit: True
-use_comet: True
+logger: json  # json | comet
+log_dir: null  # Parent directory for unique run folders; null uses Hydra's run directory.
+checkpoint_filename: checkpoint.msgpack  # Replaced at every evaluation.
 batch_size: 512
 eval_frequency: 200
 # Rolling evaluation capacity; append batch_size samples at each evaluation.
@@ -12,7 +14,7 @@ eval_frequency: 200
 eval_buffer_size: 2000000
 
 comet:
-  api_key: ${oc.env:COMET_API_KEY}
+  api_key: ${oc.env:COMET_API_KEY,null}
   project_name: gfn_ot
-  workspace: ${oc.env:COMET_WORKSPACE}
+  workspace: ${oc.env:COMET_WORKSPACE,null}
   exp_name: ""
