@@ -17,12 +17,9 @@ def build_evaluation_buffer(target_dist, capacity, seed):
     probs = target_dist.reshape(-1)
     probs = probs / probs.sum()
     rng = np.random.default_rng(seed)
-    target_histograms = [
-        np.bincount(rng.choice(len(probs), size=capacity, p=probs), minlength=len(probs))
-        / capacity
-        for _ in range(2)
-    ]
-    baseline = {"tv": float(0.5 * np.abs(target_histograms[0] - target_histograms[1]).sum())}
+    # fmt: off
+    target_histogram = np.bincount(rng.choice(len(probs), size=capacity, p=probs), minlength=len(probs)) / capacity
+    baseline = {"tv": float(0.5 * np.abs(probs - target_histogram).sum())}
 
     buffer = np.empty(capacity, dtype=np.int64)
     counts = np.zeros(len(probs), dtype=np.int64)
