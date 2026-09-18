@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 
 from envs.hypergrid.hypergrid import Hypergrid
 from envs.hypergrid.buffer import build_terminal_state_buffer
-from utils.helper import extract_last_entry, log1mexp
+from utils.helper import build_evaluation_buffer, extract_last_entry, log1mexp
 
 
 class Model(flax_nn.Module):
@@ -403,8 +403,11 @@ def compute_empirical_dist(samples, dim, side):
 
 def get_eval_fn(get_eval_rollout_fn, env, true_dist, cfg):
     get_eval_forward_rollout = jax.jit(get_eval_rollout_fn)
-
+    update_eval_buffer, target_metrics = build_evaluation_buffer(
+        true_dist, cfg.eval_buffer_size, cfg.seed
+    )
     logger = {"tv": [], "traj_length/max": [], "traj_length/mean": []}
+    logger.update({f"target/{name}": [value] for name, value in target_metrics.items()})
 
     def short_eval(model_state, key):
         if isinstance(model_state, tuple):
@@ -419,9 +422,9 @@ def get_eval_fn(get_eval_rollout_fn, env, true_dist, cfg):
             jnp.arange(trajectories.shape[0]), trajectories_length - 1
         ]
 
-        empirical_dist = compute_empirical_dist(terminal_states, env.dim, env.side)
-        tv = jnp.abs(true_dist - empirical_dist).sum()
-        logger["tv"].append(tv)
+        empirical_dist, metrics = update_eval_buffer(terminal_states)
+        for name, value in metrics.items():
+            logger[name].append(value)
         logger["traj_length/max"].append(jnp.max(trajectories_length))
         logger["traj_length/mean"].append(jnp.mean(trajectories_length))
         logger.update(
@@ -561,6 +564,12 @@ def prefix_tb_hypergrid_trainer(cfg, comet_exp=None):
         return loss_fn_base(key, model_state, params, get_train_backward_rollout)
 
     eval_fn, logger = get_eval_fn(partial(get_eval_rollout_base), env, true_dist, cfg)
+    print(
+        f"Target vs target ({cfg.eval_buffer_size} samples per subset): "
+        f"TV: {logger['target/tv'][-1]:.4f}"
+    )
+    if cfg.use_comet:
+        comet_exp.log_metrics({"target/tv": logger["target/tv"][-1]}, step=0)
 
     for step in range(cfg.train_num_steps):
         if not use_buffer or step % (buffer_cfg.replay_ratio + 1) == 0:

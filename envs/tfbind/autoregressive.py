@@ -1,5 +1,3 @@
-"""Frozen GFNx TFBind policy loaded directly from its NPZ checkpoint."""
-
 import json
 
 import equinox as eqx
@@ -36,13 +34,18 @@ class AutoregressiveSampler:
         return jax.nn.log_softmax(logits, axis=-1)
 
     def sample(self, key, sample_shape=()):
-        states = jnp.full((*sample_shape, self.max_length), self.pad_token, dtype=jnp.int32)
+        states = jnp.full(
+            (*sample_shape, self.max_length), self.pad_token, dtype=jnp.int32
+        )
 
         def add_character(carry, position):
             states, key_gen = carry
             key_gen, key_action = jax.random.split(key_gen)
             token = jax.random.categorical(key_action, self.log_action_probs(states))
-            return (states.at[..., position].set(token.astype(jnp.int32)), key_gen), None
+            return (
+                states.at[..., position].set(token.astype(jnp.int32)),
+                key_gen,
+            ), None
 
         (states, _), _ = jax.lax.scan(
             add_character, (states, key), jnp.arange(self.max_length)
@@ -64,7 +67,9 @@ class AutoregressiveSampler:
             return (prefix.at[..., position].set(token), log_p), None
 
         (_, log_p), _ = jax.lax.scan(
-            add_character, (prefix, jnp.zeros(states.shape[:-1])), jnp.arange(self.max_length)
+            add_character,
+            (prefix, jnp.zeros(states.shape[:-1])),
+            jnp.arange(self.max_length),
         )
         return log_p
 
@@ -95,7 +100,9 @@ class AutoregressiveSampler:
             def load_array(name, template):
                 array = jnp.asarray(checkpoint[name])
                 if array.shape != template.shape:
-                    raise ValueError(f"Invalid shape for {name}: {array.shape}, expected {template.shape}")
+                    raise ValueError(
+                        f"Invalid shape for {name}: {array.shape}, expected {template.shape}"
+                    )
                 return array
 
             for i, layer in enumerate(model.encoder.layers):

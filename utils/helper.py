@@ -1,5 +1,55 @@
 import jax
 import jax.numpy as jnp
+import numpy as np
+
+
+def build_evaluation_buffer(target_dist, capacity, seed):
+    """Keep the latest terminal samples and their histogram for TV evaluation.
+
+    Each update appends one batch, evicting the oldest samples once full.
+    Store flattened state indices on the host and update counts incrementally.
+    The startup baseline compares two independent target subsets of capacity
+    samples each; model TV compares the buffered histogram to the true target.
+    """
+    if capacity < 1:
+        raise ValueError("Evaluation buffer capacity must be positive")
+    target_dist = np.asarray(target_dist, dtype=np.float64)
+    probs = target_dist.reshape(-1)
+    probs = probs / probs.sum()
+    rng = np.random.default_rng(seed)
+    target_histograms = [
+        np.bincount(rng.choice(len(probs), size=capacity, p=probs), minlength=len(probs))
+        / capacity
+        for _ in range(2)
+    ]
+    baseline = {"tv": float(0.5 * np.abs(target_histograms[0] - target_histograms[1]).sum())}
+
+    buffer = np.empty(capacity, dtype=np.int64)
+    counts = np.zeros(len(probs), dtype=np.int64)
+    size = cursor = 0
+
+    def update(samples):
+        nonlocal size, cursor, counts
+        samples = np.asarray(samples, dtype=np.int32)
+        indices = np.ravel_multi_index(samples.T, target_dist.shape)
+        if len(indices) >= capacity:
+            buffer[:] = indices[-capacity:]
+            counts = np.bincount(buffer, minlength=len(probs))
+            size, cursor = capacity, 0
+        else:
+            positions = (cursor + np.arange(len(indices))) % capacity
+            # Before the first wrap, only buffer[:size] has been populated.
+            evicted = buffer[positions[positions < size]]
+            counts -= np.bincount(evicted, minlength=len(probs))
+            buffer[positions] = indices
+            counts += np.bincount(indices, minlength=len(probs))
+            size = min(capacity, size + len(indices))
+            cursor = (cursor + len(indices)) % capacity
+        empirical = counts / size
+        metrics = {"tv": float(0.5 * np.abs(probs - empirical).sum())}
+        return empirical.reshape(target_dist.shape), metrics
+
+    return update, baseline
 
 
 def flatten_dict(d, parent_key="", sep="_"):

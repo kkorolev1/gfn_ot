@@ -7,6 +7,9 @@ use_jit: True
 use_comet: True
 batch_size: 512
 eval_frequency: 200
+# Rolling evaluation capacity; append batch_size samples at each evaluation.
+# Also the size of each independent target subset for the startup TV baseline.
+eval_buffer_size: 2000000
 
 comet:
   api_key: ${oc.env:COMET_API_KEY}

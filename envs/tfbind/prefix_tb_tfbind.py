@@ -13,8 +13,7 @@ import matplotlib.pyplot as plt
 
 from envs.tfbind.tfbind import TFBind8Environment
 from envs.tfbind.buffer import build_terminal_state_buffer
-from envs.tfbind.evaluation import build_exact_evaluator, build_sample_evaluator
-from utils.helper import extract_last_entry, log1mexp
+from utils.helper import build_evaluation_buffer, extract_last_entry, log1mexp
 
 
 class Model(flax_nn.Module):
@@ -384,26 +383,12 @@ def get_eval_rollout(
     return trajectories, trajectories_length
 
 
-def get_eval_fn(get_eval_rollout_fn, env, true_dist, cfg, true_log_rewards=None):
+def get_eval_fn(get_eval_rollout_fn, env, true_dist, cfg):
     get_eval_forward_rollout = jax.jit(get_eval_rollout_fn)
-    sample_eval, target_metrics = build_sample_evaluator(
-        true_dist, cfg.batch_size, cfg.seed
+    update_eval_buffer, target_metrics = build_evaluation_buffer(
+        true_dist, cfg.eval_buffer_size, cfg.seed
     )
-    exact_eval = None
-    if getattr(cfg, "eval_exact", True):
-        if true_log_rewards is None:
-            true_log_rewards = env._get_states_log_rewards()
-        exact_eval = build_exact_evaluator(
-            env, true_log_rewards, cfg.eval_rollout_max_length,
-            batch_size=getattr(cfg, "eval_policy_batch_size", 1024),
-            tolerance=getattr(cfg, "eval_mass_tolerance", 1e-8),
-        )
-
-    logger = {
-        "tv": [], "tv_samples": [], "sd": [], "l1_empirical": [],
-        "traj_length/max": [], "traj_length/mean": [],
-        "traj_length/truncated_fraction": [],
-    }
+    logger = {"tv": [], "traj_length/max": [], "traj_length/mean": []}
     logger.update({f"target/{name}": [value] for name, value in target_metrics.items()})
 
     def short_eval(model_state, key):
@@ -418,27 +403,15 @@ def get_eval_fn(get_eval_rollout_fn, env, true_dist, cfg, true_log_rewards=None)
         terminal_states = trajectories[
             jnp.arange(trajectories.shape[0]), trajectories_length - 1
         ]
-        for name, value in sample_eval(terminal_states).items():
+        empirical_dist, metrics = update_eval_buffer(terminal_states)
+        for name, value in metrics.items():
             logger[name].append(value)
-
-        empirical_dist = env.get_empirical_distribution(terminal_states)
-        l1_empirical = jnp.abs(true_dist - empirical_dist).sum()
-        logger["l1_empirical"].append(l1_empirical)
-        if exact_eval is not None:
-            terminal_dist, exact_metrics = exact_eval(model_state)
-            for name, value in exact_metrics.items():
-                logger.setdefault(name, []).append(value)
-        else:
-            terminal_dist = empirical_dist
-            logger["tv"].append(0.5 * l1_empirical)
-        logger["traj_length/truncated_fraction"].append(
-            jnp.mean(trajectories_length > cfg.eval_rollout_max_length)
-        )
         logger["traj_length/max"].append(jnp.max(trajectories_length))
         logger["traj_length/mean"].append(jnp.mean(trajectories_length))
+
         logger.update(
             env.visualize(
-                terminal_dist,
+                empirical_dist,
                 prefix="terminal_dist",
             )
         )
@@ -522,35 +495,24 @@ def prefix_tb_tfbind_trainer(cfg, comet_exp=None):
         return loss_fn_base(key, model_state, params, get_train_backward_rollout)
 
     eval_fn, logger = get_eval_fn(
-        partial(get_eval_rollout_base), env, true_dist, cfg, true_log_rewards
+        get_eval_rollout_base, env, true_dist, cfg
     )
     print(
-        f"Target vs target ({batch_size} samples per batch): "
-        f"TV samples: {logger['target/tv_samples'][-1]:.4f}, "
-        f"SD (Hamming W1): {logger['target/sd'][-1]:.4f}, "
-        f"L1 empirical: {logger['target/l1_empirical'][-1]:.4f}"
+        f"Target vs target ({cfg.eval_buffer_size} samples per subset): "
+        f"TV: {logger['target/tv'][-1]:.4f}"
     )
 
     def evaluate(model_state, key, step, losses=None):
         eval_key, buffer_key = jax.random.split(key)
         logger.update(eval_fn(model_state, eval_key))
 
-        exact_info = ""
-        if "tv_upper_bound" in logger:
-            exact_info = (
-                f", TV upper: {logger['tv_upper_bound'][-1]:.6f}"
-                f", Unabsorbed: {logger['eval/unabsorbed_mass'][-1]:.3e}"
-            )
         loss_info = "" if losses is None else f"Loss: {jnp.mean(losses):.4f}, "
         print(
             f"[{step}/{cfg.train_num_steps}] "
             f"{loss_info}"
             f"TV: {logger['tv'][-1]:.4f}, "
-            f"TV samples: {logger['tv_samples'][-1]:.4f}, "
-            f"SD: {logger['sd'][-1]:.4f}, "
             f"Max Len: {logger['traj_length/max'][-1]:.4f}, "
             f"Mean Len: {logger['traj_length/mean'][-1]:.4f}"
-            f"{exact_info}"
         )
 
         if use_buffer and step > 0:
