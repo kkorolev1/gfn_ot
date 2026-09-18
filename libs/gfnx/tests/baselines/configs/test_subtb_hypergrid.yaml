@@ -1,0 +1,49 @@
+# Test section
+loss_threshold: 5e-4
+
+# Training section
+seed: 1
+env_init_seed: 2
+eval_init_seed: 3
+
+num_train_steps: 50_000
+num_envs: 16
+
+agent:
+  learning_rate: 1e-3
+  eps_exploration: 0.00
+  train_backward: true
+  lmbd: 1.0
+  start_eps: 0.0
+  end_eps: 0.0
+  exploration_steps: 10
+
+network:
+  hidden_size: 128
+  depth: 2
+
+environment:
+  reward: "easy"
+  dim: 2
+  side: 10
+
+logging:
+  track_each: 10_000
+  eval_each: 10_000  # Evaluate every 100 steps
+  metric_buffer_size: 16  # Dummy value
+  tqdm_print_rate: 10_000
+  use_writer: false  # Disable wandb/trackio
+  log_dir: null
+  checkpoint_dir: null
+
+writer:
+  writer_type: null
+  save_locally: false
+  entity: null
+  project: null
+
+hydra:
+  run:
+    dir: ./tmp/test_runs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: ./tmp/test_runs/${now:%Y-%m-%d}/${now:%H-%M-%S}

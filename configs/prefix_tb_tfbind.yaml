@@ -2,7 +2,7 @@ name: prefix_tb_tfbind
 
 env:
   _target_: envs.tfbind.tfbind.TFBind8Environment
-  beta: 0.1
+  beta: 2.0
   checkpoint: envs/tfbind/checkpoint/sampler.npz
 
 train_rollout_max_length: 500

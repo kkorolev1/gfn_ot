@@ -1,0 +1,42 @@
+seed: 111
+env_init_seed: 1
+eval_init_seed: 2
+
+num_train_steps: 1000000
+num_envs: 16
+
+agent:
+  learning_rate: 1e-3
+  start_eps: 1.0
+  end_eps: 0.0
+  exploration_steps: 50_000 # Should be <= of num_train_steps
+  train_backward: true
+  lmbd: 1.0
+
+network:
+  # Input size and output size are computed based on the environment
+  hidden_size: 256
+  depth: 2
+
+logging:
+  track_each: 1 # in terms of total training steps, not divided by num_envs
+  eval_each: 500 # in terms of total training steps, not divited by num_envs
+  metric_buffer_size: 1000000
+  tqdm_print_rate: 20
+  use_writer: true
+  log_dir: null # If null, dir will be automatically created
+  checkpoint_dir: null # If null, dir will be automatically created
+
+# Technical information for writer
+writer:
+  writer_type: wandb # wandb, trackio or null (no logging online)
+  save_locally: false # Save metrics locally or not
+  entity: null
+  project: EPS
+
+# Technical information for hydra
+hydra:
+  run:
+    dir: ./tmp/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: ./tmp/${now:%Y-%m-%d}/${now:%H-%M-%S}

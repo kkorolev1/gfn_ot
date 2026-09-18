@@ -1,7 +1,8 @@
+# VSCode
+.vscode/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
-*.pyc
 *$py.class
 
 # C extensions
@@ -74,7 +75,7 @@ docs/_build/
 
 # PyBuilder
 .pybuilder/
-#target/
+target/
 
 # Jupyter Notebook
 .ipynb_checkpoints
@@ -107,8 +108,10 @@ ipython_config.py
 #pdm.lock
 #   pdm stores project-wide configurations in .pdm.toml, but it is recommended to not include it
 #   in version control.
-#   https://pdm.fming.dev/#use-with-ide
+#   https://pdm.fming.dev/latest/usage/project/#working-with-version-control
 .pdm.toml
+.pdm-python
+.pdm-build/
 
 # PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
 __pypackages__/
@@ -153,50 +156,12 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
+# Ruff cache
+.ruff_cache/
+
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
-.idea/*
-/logs/
-*/logs/
-/wandb/
-*/wandb/
-/cluster/configs/tmp*
-/benchmark/configs/tmp*
-/ablation/configs/tmp*
-/todo.md
-/artifacts/*
-/targets/artifacts/
-*/artifacts/
-/figures/*
-/targets/data/aldp_train.h5
-/targets/data/aldp_test.h5
-/targets/data/aldp_10k.h5
-/samples/
-/models/
-/algorithms/dis/wandb/
-/algorithms/scld/wandb/
-/outputs/
-/multirun/
-/utils/nice_trainer/wandb/
-utils/images
-utils/diffusion_gif.gif
-utils/prior_gif.gif
-/checkpoints/
-
-# VSCode
-.vscode/
-
-# Slurm
-scripts/
-slurm_logs/
-
-.cometml-runs/**
-.DS_Store
-outputs/**
-
-libs/gfnx/wandb/
-libs/gfnx/tmp/
-libs/gfnx/.cometml-runs/
+#.idea/
