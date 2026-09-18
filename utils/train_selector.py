@@ -3,5 +3,9 @@ def get_train_fn(alg_name):
         from envs.hypergrid.prefix_tb_hypergrid import prefix_tb_hypergrid_trainer
 
         return prefix_tb_hypergrid_trainer
+    elif alg_name == "prefix_tb_tfbind":
+        from envs.tfbind.prefix_tb_tfbind import prefix_tb_tfbind_trainer
+
+        return prefix_tb_tfbind_trainer
     else:
         raise ValueError(f"Unknown algorithm {alg_name}.")

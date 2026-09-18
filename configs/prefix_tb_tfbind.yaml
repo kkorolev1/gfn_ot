@@ -1,0 +1,46 @@
+name: prefix_tb_tfbind
+
+env:
+  _target_: envs.tfbind.tfbind.TFBind8Environment
+  beta: 0.1
+  checkpoint: envs/tfbind/checkpoint/sampler.npz
+
+train_rollout_max_length: 500
+train_num_steps: 100000
+
+eval_rollout_max_length: 500
+# Sample metrics use batch_size strings and a fixed independent target batch:
+# tv_samples = empirical TV; sd = Wasserstein-1 with Hamming cost (0 to 8).
+# target/* baselines and the untrained policy are evaluated at step 0.
+# Enumerate the learned terminal law; tv is conventional TV in [0, 1].
+eval_exact: True
+eval_policy_batch_size: 1024
+# Stop propagation early only when the remaining probability mass is this small.
+eval_mass_tolerance: 1e-8
+
+init_logZ: 0.0
+lr: 1e-3
+logZ_lr: 1e-1
+grad_clip: 0
+reg_coef: 1e-6
+use_weights: False
+
+model:
+  max_length: 8
+  nchar: 4
+  num_layers: 2
+  num_hid: 64
+
+lr_schedule:
+  type: constant  # multistep | cosine | constant
+
+buffer:
+  use: True
+  replay_ratio: 2
+  max_length_in_batches: 100
+  prioritize_by: "reward"  # none, reward, loss
+  sampling_method: "systematic"  # multinomial, stratified, systematic, rank
+  rank_k: 0.01  # only used if sampling_method is rank
+  sample_with_replacement: True
+  prefill_steps: 0  # collect `prefill_steps` batches before starting training
+  update_score: False

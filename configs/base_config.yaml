@@ -1,5 +1,5 @@
 defaults:
-  - prefix_tb_hypergrid
+  - algorithm: prefix_tb_hypergrid
   - _self_
 
 seed: 0
@@ -9,7 +9,7 @@ batch_size: 512
 eval_frequency: 200
 
 comet:
-  api_key: ${oc.env:COMETML_API_KEY}
+  api_key: ${oc.env:COMET_API_KEY}
   project_name: gfn_ot
-  workspace: ${oc.env:COMETML_WORKSPACE}
+  workspace: ${oc.env:COMET_WORKSPACE}
   exp_name: ""
