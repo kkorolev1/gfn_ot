@@ -8,7 +8,7 @@ logger: json  # json | comet
 log_dir: null  # Parent directory for unique run folders; null uses Hydra's run directory.
 checkpoint_filename: checkpoint.msgpack  # Replaced at every evaluation.
 batch_size: 512
-eval_frequency: 200
+eval_frequency: 40
 # Rolling evaluation capacity; append batch_size samples at each evaluation.
 # Also the size of each independent target subset for the startup TV baseline.
 eval_buffer_size: 2000000

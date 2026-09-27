@@ -23,7 +23,7 @@ class Model(flax_nn.Module):
     num_hid: int = 64
 
     weight_init: float = 1e-8
-    bias_init: float = 0.0
+    bias_init: float = 1e-1
 
     def setup(self):
         self.num_actions = 2 * (self.max_length * self.nchar + 1)
@@ -403,21 +403,26 @@ def get_eval_fn(get_eval_rollout_fn, env, true_dist, cfg):
         terminal_states = trajectories[
             jnp.arange(trajectories.shape[0]), trajectories_length - 1
         ]
-        empirical_dist, metrics = update_eval_buffer(terminal_states)
+        # Forced stops have length horizon + 1; natural stops at the horizon count.
+        completed_states = terminal_states[
+            trajectories_length <= cfg.eval_rollout_max_length
+        ]
+        empirical_dist, metrics = update_eval_buffer(completed_states)
         for name, value in metrics.items():
             logger[name].append(value)
         logger["traj_length/max"].append(jnp.max(trajectories_length))
         logger["traj_length/mean"].append(jnp.mean(trajectories_length))
-        logger["data/terminal_dist"] = [empirical_dist]
         logger["data/terminal_states"] = [terminal_states]
         logger["data/trajectory_lengths"] = [trajectories_length]
 
-        logger.update(
-            env.visualize(
-                empirical_dist,
-                prefix="terminal_dist",
+        if empirical_dist is not None:
+            logger["data/terminal_dist"] = [empirical_dist]
+            logger.update(
+                env.visualize(
+                    empirical_dist,
+                    prefix="terminal_dist",
+                )
             )
-        )
         return logger
 
     return short_eval, logger
@@ -454,7 +459,8 @@ def prefix_tb_tfbind_trainer(cfg, experiment_logger: Logger):
     get_eval_rollout_base = partial(
         get_eval_rollout,
         env=env,
-        batch_size=batch_size,
+        # batch_size=batch_size,
+        batch_size=50_000,
         rollout_max_length=eval_rollout_max_length,
         initial_dist=initial_dist,
     )
@@ -499,9 +505,7 @@ def prefix_tb_tfbind_trainer(cfg, experiment_logger: Logger):
         )
         return loss_fn_base(key, model_state, params, get_train_backward_rollout)
 
-    eval_fn, logger = get_eval_fn(
-        get_eval_rollout_base, env, true_dist, cfg
-    )
+    eval_fn, logger = get_eval_fn(get_eval_rollout_base, env, true_dist, cfg)
     print(
         f"Target vs target ({cfg.eval_buffer_size} samples per subset): "
         f"TV: {logger['target/tv'][-1]:.4f}"
@@ -513,10 +517,11 @@ def prefix_tb_tfbind_trainer(cfg, experiment_logger: Logger):
         experiment_logger.save_checkpoint(model_state)
 
         loss_info = "" if losses is None else f"Loss: {jnp.mean(losses):.4f}, "
+        tv_info = f"TV: {logger['tv'][-1]:.4f}, " if logger["tv"] else ""
         print(
             f"[{step}/{cfg.train_num_steps}] "
             f"{loss_info}"
-            f"TV: {logger['tv'][-1]:.4f}, "
+            f"{tv_info}"
             f"Max Len: {logger['traj_length/max'][-1]:.4f}, "
             f"Mean Len: {logger['traj_length/mean'][-1]:.4f}"
         )
@@ -525,7 +530,9 @@ def prefix_tb_tfbind_trainer(cfg, experiment_logger: Logger):
             buffer_terminal_states, _, _ = buffer.sample(
                 buffer_state, buffer_key, batch_size
             )
-            buffer_empirical_dist = env.get_empirical_distribution(buffer_terminal_states)
+            buffer_empirical_dist = env.get_empirical_distribution(
+                buffer_terminal_states
+            )
             logger["data/buffer_empirical_dist"] = [buffer_empirical_dist]
             logger.update(
                 env.visualize(buffer_empirical_dist, prefix="buffer_empirical_dist")

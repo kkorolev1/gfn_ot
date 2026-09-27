@@ -422,20 +422,25 @@ def get_eval_fn(get_eval_rollout_fn, env, true_dist, cfg):
             jnp.arange(trajectories.shape[0]), trajectories_length - 1
         ]
 
-        empirical_dist, metrics = update_eval_buffer(terminal_states)
+        # Forced stops have length horizon + 1; natural stops at the horizon count.
+        completed_states = terminal_states[
+            trajectories_length <= cfg.eval_rollout_max_length
+        ]
+        empirical_dist, metrics = update_eval_buffer(completed_states)
         for name, value in metrics.items():
             logger[name].append(value)
         logger["traj_length/max"].append(jnp.max(trajectories_length))
         logger["traj_length/mean"].append(jnp.mean(trajectories_length))
-        logger["data/terminal_dist"] = [empirical_dist]
         logger["data/terminal_states"] = [terminal_states]
         logger["data/trajectory_lengths"] = [trajectories_length]
-        logger.update(
-            env.visualize(
-                empirical_dist,
-                prefix="empirical_dist",
+        if empirical_dist is not None:
+            logger["data/terminal_dist"] = [empirical_dist]
+            logger.update(
+                env.visualize(
+                    empirical_dist,
+                    prefix="empirical_dist",
+                )
             )
-        )
         return logger
 
     return short_eval, logger
@@ -620,10 +625,11 @@ def prefix_tb_hypergrid_trainer(cfg, experiment_logger: Logger):
             logger.update(eval_fn(model_state, key))
             experiment_logger.save_checkpoint(model_state)
 
+            tv_info = f"TV: {logger['tv'][-1]:.4f}, " if logger["tv"] else ""
             print(
                 f"[{step + 1}/{cfg.train_num_steps}] "
                 f"Loss: {jnp.mean(losses):.4f}, "
-                f"TV: {logger['tv'][-1]:.4f}, "
+                f"{tv_info}"
                 f"Max Len: {logger['traj_length/max'][-1]:.4f}, "
                 f"Mean Len: {logger['traj_length/mean'][-1]:.4f}"
             )

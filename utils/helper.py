@@ -8,6 +8,7 @@ def build_evaluation_buffer(target_dist, capacity, seed):
 
     Each update appends one batch, evicting the oldest samples once full.
     Store flattened state indices on the host and update counts incrementally.
+    Return (None, {}) until the buffer contains at least one sample.
     The startup baseline compares two independent target subsets of capacity
     samples each; model TV compares the buffered histogram to the true target.
     """
@@ -42,6 +43,8 @@ def build_evaluation_buffer(target_dist, capacity, seed):
             counts += np.bincount(indices, minlength=len(probs))
             size = min(capacity, size + len(indices))
             cursor = (cursor + len(indices)) % capacity
+        if size == 0:
+            return None, {}
         empirical = counts / size
         metrics = {"tv": float(0.5 * np.abs(probs - empirical).sum())}
         return empirical.reshape(target_dist.shape), metrics

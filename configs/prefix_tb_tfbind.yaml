@@ -5,10 +5,10 @@ env:
   beta: 2.0
   checkpoint: envs/tfbind/checkpoint/sampler.npz
 
-train_rollout_max_length: 500
+train_rollout_max_length: 10
 train_num_steps: 100000
 
-eval_rollout_max_length: 500
+eval_rollout_max_length: 100
 # tv compares normalized rewards to the rolling evaluation-buffer histogram.
 # target/tv compares two independent target subsets before training.
 
@@ -16,17 +16,20 @@ init_logZ: 0.0
 lr: 1e-3
 logZ_lr: 1e-1
 grad_clip: 0
-reg_coef: 1e-6
+reg_coef: 1e-1
 use_weights: False
 
 model:
   max_length: 8
   nchar: 4
-  num_layers: 2
-  num_hid: 64
+  num_layers: 3
+  num_hid: 256
 
 lr_schedule:
-  type: constant  # multistep | cosine | constant
+  # type: constant  # multistep | cosine | constant
+  type: multistep
+  milestones: [1000, 2000, 3000, 4000]
+  gamma: 0.95
 
 buffer:
   use: True
