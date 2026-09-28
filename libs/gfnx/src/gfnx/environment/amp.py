@@ -29,6 +29,10 @@ class AMPEnvironment(AutoregressiveSequenceEnvironment):
         """Environment name."""
         return "AMP-v0"
 
+    def get_invalid_mask(self, state: EnvState, env_params: EnvParams) -> chex.Array:
+        mask = super().get_invalid_mask(state, env_params)
+        return mask.at[:, self.stop_action].set(True)
+
     def get_obs(self, state: EnvState, env_params: EnvParams) -> chex.Array:
         """Applies observation function to state."""
 
@@ -37,7 +41,7 @@ class AMPEnvironment(AutoregressiveSequenceEnvironment):
         to_append = jnp.where(
             jnp.logical_or(last_token == self.pad_token, last_token == self.eos_token),
             self.pad_token,
-            self.eos_token
+            self.eos_token,
         )
         to_append = to_append[:, None]  # Add dimension to match concatenation
 

@@ -109,7 +109,10 @@ def init_model(key_gen, cfg):
     params = model.init(
         key, jnp.ones([cfg.batch_size, cfg.env.max_length]), jnp.ones([cfg.batch_size])
     )
-    params["params"] = {**params["params"], "logZ": jnp.array((cfg.init_logZ,))}
+    # AMP calibrates logZ before training; zero also permits building a template
+    # for checkpoint restoration from a saved config with init_logZ: null.
+    init_logZ = 0.0 if cfg.init_logZ is None else cfg.init_logZ
+    params["params"] = {**params["params"], "logZ": jnp.array((init_logZ,))}
     optimizers_map = {
         "model_optim": optax.adam(learning_rate=build_lr_schedule(cfg.lr)),
         "logZ_optim": optax.adam(learning_rate=build_lr_schedule(cfg.logZ_lr)),
@@ -266,6 +269,7 @@ def prefix_tb_loss_fn(
     get_train_rollout_fn,
     reg_coef: float = 0.0,
     use_weights: bool = False,
+    flow_penalty_log_scale: float = 0.0,
 ):
     terminal_states, log_pfs_over_pbs, log_rewards, log_flows = get_train_rollout_fn(
         key, model_state, params
@@ -296,7 +300,10 @@ def prefix_tb_loss_fn(
         weights = jnp.ones((batch_size, 1)) / rollout_length
 
     tb_losses = jnp.square(discrepancy) * weights
-    flow_penalties = reg_coef * jnp.exp(log_flows) * weights
+    flow_penalties = (
+        reg_coef * jnp.exp(log_flows + flow_penalty_log_scale) * weights
+        if reg_coef != 0 else jnp.zeros_like(tb_losses)
+    )
     losses = tb_losses.sum(-1) + flow_penalties.sum(-1)
     return jnp.mean(losses), (
         terminal_states,
@@ -428,7 +435,7 @@ def get_eval_fn(get_eval_rollout_fn, env, true_dist, cfg):
     return short_eval, logger
 
 
-def prefix_tb_tfbind_trainer(cfg, experiment_logger: Logger):
+def prefix_tb_tfbind_trainer(cfg, experiment_logger: Logger, eval_fn_factory=None):
     key_gen = jax.random.PRNGKey(cfg.seed)
 
     env: TFBind8Environment = cfg.env
@@ -439,12 +446,14 @@ def prefix_tb_tfbind_trainer(cfg, experiment_logger: Logger):
     key, key_gen = jax.random.split(key_gen)
     model_state = init_model(key, cfg)
 
-    true_log_rewards = env._get_states_log_rewards()
-    true_logZ = nn.logsumexp(true_log_rewards)
-    true_dist = jnp.exp(true_log_rewards - true_logZ)
-    print(f"True logZ: {true_logZ:.4f}")
-    experiment_logger.log_metrics({"logZ_true": true_logZ}, step=0)
-    experiment_logger.log_array("target_dist", true_dist, step=0)
+    true_dist = None
+    if env.is_enumerable:
+        true_log_rewards = env._get_states_log_rewards()
+        true_logZ = nn.logsumexp(true_log_rewards)
+        true_dist = jnp.exp(true_log_rewards - true_logZ)
+        print(f"True logZ: {true_logZ:.4f}")
+        experiment_logger.log_metrics({"logZ_true": true_logZ}, step=0)
+        experiment_logger.log_array("target_dist", true_dist, step=0)
 
     initial_dist = env.get_initial_dist()
 
@@ -459,8 +468,7 @@ def prefix_tb_tfbind_trainer(cfg, experiment_logger: Logger):
     get_eval_rollout_base = partial(
         get_eval_rollout,
         env=env,
-        # batch_size=batch_size,
-        batch_size=50_000,
+        batch_size=getattr(cfg, "eval_batch_size", 50_000),
         rollout_max_length=eval_rollout_max_length,
         initial_dist=initial_dist,
     )
@@ -481,7 +489,8 @@ def prefix_tb_tfbind_trainer(cfg, experiment_logger: Logger):
         )
 
     loss_fn_base = partial(
-        prefix_tb_loss_fn, reg_coef=cfg.reg_coef, use_weights=cfg.use_weights
+        prefix_tb_loss_fn, reg_coef=cfg.reg_coef, use_weights=cfg.use_weights,
+        flow_penalty_log_scale=getattr(cfg, "flow_penalty_log_scale", 0.0),
     )
 
     @partial(jax.jit)
@@ -505,11 +514,13 @@ def prefix_tb_tfbind_trainer(cfg, experiment_logger: Logger):
         )
         return loss_fn_base(key, model_state, params, get_train_backward_rollout)
 
-    eval_fn, logger = get_eval_fn(get_eval_rollout_base, env, true_dist, cfg)
-    print(
-        f"Target vs target ({cfg.eval_buffer_size} samples per subset): "
-        f"TV: {logger['target/tv'][-1]:.4f}"
-    )
+    eval_fn_factory = get_eval_fn if eval_fn_factory is None else eval_fn_factory
+    eval_fn, logger = eval_fn_factory(get_eval_rollout_base, env, true_dist, cfg)
+    if logger.get("target/tv"):
+        print(
+            f"Target vs target ({cfg.eval_buffer_size} samples per subset): "
+            f"TV: {logger['target/tv'][-1]:.4f}"
+        )
 
     def evaluate(model_state, key, step, losses=None):
         eval_key, buffer_key = jax.random.split(key)
@@ -517,7 +528,7 @@ def prefix_tb_tfbind_trainer(cfg, experiment_logger: Logger):
         experiment_logger.save_checkpoint(model_state)
 
         loss_info = "" if losses is None else f"Loss: {jnp.mean(losses):.4f}, "
-        tv_info = f"TV: {logger['tv'][-1]:.4f}, " if logger["tv"] else ""
+        tv_info = f"TV: {logger['tv'][-1]:.4f}, " if logger.get("tv") else ""
         print(
             f"[{step}/{cfg.train_num_steps}] "
             f"{loss_info}"
@@ -530,12 +541,15 @@ def prefix_tb_tfbind_trainer(cfg, experiment_logger: Logger):
             buffer_terminal_states, _, _ = buffer.sample(
                 buffer_state, buffer_key, batch_size
             )
-            buffer_empirical_dist = env.get_empirical_distribution(
-                buffer_terminal_states
-            )
-            logger["data/buffer_empirical_dist"] = [buffer_empirical_dist]
+            if env.is_enumerable:
+                buffer_empirical_dist = env.get_empirical_distribution(buffer_terminal_states)
+                buffer_name = "buffer_empirical_dist"
+            else:
+                buffer_empirical_dist = env.get_position_marginals(buffer_terminal_states)
+                buffer_name = "buffer_position_marginals"
+            logger[f"data/{buffer_name}"] = [buffer_empirical_dist]
             logger.update(
-                env.visualize(buffer_empirical_dist, prefix="buffer_empirical_dist")
+                env.visualize(buffer_empirical_dist, prefix=buffer_name)
             )
 
         experiment_logger.log_evaluation(logger, step=step)

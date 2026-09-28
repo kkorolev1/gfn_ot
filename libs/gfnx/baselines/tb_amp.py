@@ -22,9 +22,9 @@ import jax
 import jax.numpy as jnp
 import optax
 from jax_tqdm import loop_tqdm
-from jaxtyping import Array, Int
 from omegaconf import OmegaConf
 from utils.checkpoint import save_checkpoint
+from utils.amp_model import TransformerPolicy, save_sampler_checkpoint
 from utils.logger import Writer
 
 import gfnx
@@ -33,73 +33,6 @@ from gfnx.metrics import MultiMetricsModule, MultiMetricsState, TopKMetricsModul
 log = logging.getLogger(__name__)
 log.setLevel(logging.INFO)
 writer = Writer()
-
-
-class TransformerPolicy(eqx.Module):
-    """
-    A policy module that uses a simple transformer model to generate
-    forward and backward action logits as well as a flow.
-    """
-
-    encoder: gfnx.networks.Encoder
-    pooler: eqx.nn.Linear
-    train_backward_policy: bool
-    n_fwd_actions: int
-    n_bwd_actions: int
-
-    def __init__(
-        self,
-        n_fwd_actions: int,
-        n_bwd_actions: int,
-        train_backward_policy: bool,
-        encoder_params: dict,
-        *,
-        key: chex.PRNGKey,
-    ):
-        self.train_backward_policy = train_backward_policy
-        self.n_fwd_actions = n_fwd_actions
-        self.n_bwd_actions = n_bwd_actions
-
-        output_size = self.n_fwd_actions + 1  # +1 for flow
-        if train_backward_policy:
-            output_size += n_bwd_actions
-
-        encoder_key, pooler_key = jax.random.split(key)
-        self.encoder = gfnx.networks.Encoder(key=encoder_key, **encoder_params)
-        self.pooler = eqx.nn.Linear(
-            in_features=encoder_params["hidden_size"],
-            out_features=output_size,
-            key=pooler_key,
-        )
-
-    def __call__(
-        self,
-        obs_ids: Int[Array, " seq_len"],
-        *,
-        enable_dropout: bool = False,
-        key: chex.PRNGKey | None = None,
-    ) -> chex.Array:
-        pos_ids = jnp.arange(obs_ids.shape[0])
-        encoded_obs = self.encoder(obs_ids, pos_ids, enable_dropout=enable_dropout, key=key)[
-            "layers_out"
-        ][-1]  # [seq_len, hidden_size]
-        encoded_obs = encoded_obs.mean(axis=0)  # Average pooling
-        output = self.pooler(encoded_obs)
-        if self.train_backward_policy:
-            # The TB loss does not use the flow term from the policy.
-            # We expect fwd_logits and bwd_logits only.
-            # So, we will ignore the flow term here.
-            fwd_logits, _, bwd_logits = jnp.split(
-                output, [self.n_fwd_actions, self.n_fwd_actions + 1], axis=-1
-            )
-        else:
-            # Similarly, ignore flow if not training backward policy.
-            fwd_logits, _ = jnp.split(output, [self.n_fwd_actions], axis=-1)
-            bwd_logits = jnp.zeros(shape=(self.n_bwd_actions,), dtype=jnp.float32)
-        return {
-            "forward_logits": fwd_logits,
-            "backward_logits": bwd_logits,
-        }
 
 
 # Define the train state that will be used in the training loop
@@ -439,7 +372,7 @@ def run_experiment(cfg: OmegaConf) -> None:
         encoder_params={
             "pad_id": env.pad_token,
             "vocab_size": env.ntoken,
-            "max_length": env.max_length + 1, # +1 for BOS token
+            "max_length": env.max_length + 1,  # +1 for trailing EOS/PAD token
             **OmegaConf.to_container(cfg.network),
         },
         key=net_init_key,
@@ -586,6 +519,11 @@ def run_experiment(cfg: OmegaConf) -> None:
             "model": final_train_state.model,
             "logZ": final_train_state.logZ,
         },
+    )
+    save_sampler_checkpoint(
+        os.path.join(dir, "sampler.npz"),
+        final_train_state.model,
+        final_train_state.logZ,
     )
 
 

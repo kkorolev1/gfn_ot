@@ -1,0 +1,26 @@
+defaults:
+  - /prefix_tb_tfbind
+  - _self_
+
+name: prefix_tb_amp
+
+env:
+  _target_: envs.amp.amp.AMPEnvironment
+  beta: 2.0
+  checkpoint: envs/amp/checkpoint/sampler.npz
+
+# AMP's frozen Transformer is evaluated for every autoregressive prefix.
+default_batch_size: 16
+eval_batch_size: 16
+
+# null calibrates these once from a source batch; this is not an exact logZ.
+init_logZ: null
+flow_penalty_log_scale: null
+reg_coef: 0.1
+
+model:
+  max_length: 60
+  nchar: 20
+
+buffer:
+  use: False
