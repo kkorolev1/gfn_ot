@@ -4,6 +4,8 @@ eval_init_seed: 2
 
 num_train_steps: 20000
 num_envs: 16
+init_logZ: null # 150 for the proxy reward; estimated from p for the GFlowNet reward.
+init_logZ_num_samples: 256
 
 agent:
   learning_rate: 1e-3
@@ -29,6 +31,9 @@ network:
   attention_dropout_rate: 0.0
 
 environment:
+  reward_type: proxy # proxy or gflownet
+  sampler_checkpoint: null
+  beta: 2.0
   proxy_config_path: proxy/configs/amp.yaml
   pretrained_proxy_path: proxy/weights/amp/model
   reward_exponent: 1.0
@@ -42,14 +47,14 @@ logging:
   track_each: 1 # in terms of total training steps, not divited by num_envs
   eval_each: 500 # in terms of total training steps, not divited by num_envs
   tqdm_print_rate: 20
-  use_writer: false
+  use_writer: true
   log_dir: null # If null, dir will be automatically created
   checkpoint_dir: null # If null, dir will be automatically created
 
 # Technical information for writer
 writer:
-  writer_type: wandb # wandb, trackio or null (no logging online)
-  save_locally: false # Save metrics locally or not
+  writer_type: comet # wandb, trackio or null (no logging online)
+  save_locally: true # Save metrics locally or not
   entity: gfn-sampling
   project: mctx
 

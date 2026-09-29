@@ -5,6 +5,11 @@ Run the script with the following command:
 python baselines/tb_amp.py
 ```
 
+For R(x) = p_teacher(x)**beta on fixed-length AMP sequences:
+```bash
+python baselines/tb_amp.py --config-name tb_amp_power
+```
+
 Also see https://jax.readthedocs.io/en/latest/gpu_performance_tips.html for
 performance tips when running on GPU, i.e., XLA flags.
 
@@ -13,6 +18,7 @@ performance tips when running on GPU, i.e., XLA flags.
 import functools
 import logging
 import os
+from pathlib import Path
 from typing import NamedTuple
 
 import chex
@@ -25,10 +31,11 @@ from jax_tqdm import loop_tqdm
 from omegaconf import OmegaConf
 from utils.checkpoint import save_checkpoint
 from utils.amp_model import TransformerPolicy, save_sampler_checkpoint
+from utils.amp_reward import FixedLengthAMPEnvironment, GFlowNetAMPRewardModule
 from utils.logger import Writer
 
 import gfnx
-from gfnx.metrics import MultiMetricsModule, MultiMetricsState, TopKMetricsModule
+from gfnx.metrics import ELBOMetricsModule, MultiMetricsModule, MultiMetricsState, TopKMetricsModule
 
 log = logging.getLogger(__name__)
 log.setLevel(logging.INFO)
@@ -265,7 +272,10 @@ def train_step(idx: int, train_state: TrainState) -> TrainState:
         train_state.metrics_state,
         rng_key=jax.random.key(0),  # not used, but required by the API
         args=train_state.metrics_module.UpdateArgs(
-            metrics_args={"topk": TopKMetricsModule.UpdateArgs()}
+            metrics_args={
+                name: metric.UpdateArgs()
+                for name, metric in train_state.metrics_module.metrics.items()
+            }
         ),
     )
 
@@ -286,9 +296,10 @@ def train_step(idx: int, train_state: TrainState) -> TrainState:
             "rng_key": eval_rng_key,
             "args": train_state.metrics_module.ProcessArgs(
                 metrics_args={
-                    "topk": TopKMetricsModule.ProcessArgs(
+                    name: metric.ProcessArgs(
                         policy_params=current_policy_params, env_params=env_params
                     )
+                    for name, metric in train_state.metrics_module.metrics.items()
                 }
             ),
         },
@@ -325,6 +336,7 @@ def train_step(idx: int, train_state: TrainState) -> TrainState:
             "logZ": new_logZ,
             "mean_reward": jnp.exp(aux_info["log_gfn_reward"]).mean(),
             "mean_log_reward": aux_info["log_gfn_reward"].mean(),
+            "mean_traj_length": aux_info["trajectory_length"].mean(),
             "rl_reward": rl_reward.mean(),
         },
         eval_info,
@@ -353,15 +365,33 @@ def run_experiment(cfg: OmegaConf) -> None:
     eval_init_key = jax.random.PRNGKey(cfg.eval_init_seed)
 
     # Define the reward function for the environment
-    reward_module = gfnx.EqxProxyAMPRewardModule(
-        proxy_config_path=cfg.environment.proxy_config_path,
-        pretrained_proxy_path=cfg.environment.pretrained_proxy_path,
-        reward_exponent=cfg.environment.reward_exponent,
-        min_reward=cfg.environment.min_reward,
-    )
-    # Initialize the environment and its inner parameters
-    env = gfnx.AMPEnvironment(reward_module)
+    if cfg.environment.reward_type == "gflownet":
+        reward_module = GFlowNetAMPRewardModule(
+            checkpoint=cfg.environment.sampler_checkpoint,
+            beta=cfg.environment.beta,
+        )
+        cfg.environment.sampler_checkpoint = str(reward_module.checkpoint)
+        log.info("Frozen AMP teacher: %s; beta: %s", reward_module.checkpoint, reward_module.beta)
+        env = FixedLengthAMPEnvironment(reward_module)
+    elif cfg.environment.reward_type == "proxy":
+        reward_module = gfnx.EqxProxyAMPRewardModule(
+            proxy_config_path=cfg.environment.proxy_config_path,
+            pretrained_proxy_path=cfg.environment.pretrained_proxy_path,
+            reward_exponent=cfg.environment.reward_exponent,
+            min_reward=cfg.environment.min_reward,
+        )
+        env = gfnx.AMPEnvironment(reward_module)
+    else:
+        raise ValueError(f"Unknown AMP reward type: {cfg.environment.reward_type}")
     env_params = env.init(env_init_key)
+
+    checkpoint_dir = cfg.logging.checkpoint_dir or os.path.join(
+        hydra.core.hydra_config.HydraConfig.get().runtime.output_dir,
+        f"checkpoints_{os.getpid()}/",
+    )
+    if cfg.environment.reward_type == "gflownet":
+        if (Path(checkpoint_dir) / "sampler.npz").resolve() == reward_module.checkpoint:
+            raise ValueError("Choose a checkpoint_dir that does not overwrite the frozen teacher")
 
     rng_key, net_init_key = jax.random.split(rng_key)
     # Initialize the network
@@ -385,7 +415,17 @@ def run_experiment(cfg: OmegaConf) -> None:
     )
 
     # Initialize logZ separately
-    logZ = jnp.array(150.0)
+    if cfg.init_logZ is not None:
+        logZ = jnp.array(cfg.init_logZ, dtype=jnp.float32)
+    elif cfg.environment.reward_type == "gflownet":
+        rng_key, logZ_key = jax.random.split(rng_key)
+        logZ = reward_module.estimate_log_partition(
+            logZ_key, num_samples=cfg.init_logZ_num_samples, batch_size=cfg.num_envs,
+        )
+    else:
+        logZ = jnp.array(150.0)
+    cfg.init_logZ = float(logZ)
+    log.info("Initial logZ: %.6f", cfg.init_logZ)
 
     # Prepare parameters for Optax
     model_params_init = eqx.filter(model, eqx.is_array)
@@ -434,19 +474,36 @@ def run_experiment(cfg: OmegaConf) -> None:
             lhs_state.tokens, rhs_state.tokens, eos_id=env.eos_token, pad_id=env.pad_token
         )
 
-    metrics_module = MultiMetricsModule({
-        "topk": TopKMetricsModule(
-            fwd_policy_fn=fwd_policy_fn_for_metrics,
-            env=env,
-            num_traj=cfg.metrics.num_traj,
-            batch_size=cfg.metrics.batch_size,  # Ignored for a moment
-            top_k=[10, 50, 100],
-            distance_fn=amp_distance_fn,
-        )
-    })
+    if cfg.environment.reward_type == "gflownet":
+        # p(x)**beta can underflow in float32. ELBO evaluates in log space
+        # and respects the evaluation batch size for the frozen Transformer.
+        if cfg.metrics.num_traj < 1 or cfg.metrics.batch_size < 1:
+            raise ValueError("Evaluation sample and batch sizes must be positive")
+        if cfg.metrics.num_traj % cfg.metrics.batch_size:
+            raise ValueError("metrics.num_traj must be divisible by metrics.batch_size")
+        metrics_module = MultiMetricsModule({
+            "elbo": ELBOMetricsModule(
+                env=env, env_params=env_params, fwd_policy_fn=fwd_policy_fn_for_metrics,
+                n_rounds=cfg.metrics.num_traj // cfg.metrics.batch_size,
+                batch_size=cfg.metrics.batch_size,
+            ),
+        })
+    else:
+        metrics_module = MultiMetricsModule({
+            "topk": TopKMetricsModule(
+                fwd_policy_fn=fwd_policy_fn_for_metrics,
+                env=env,
+                num_traj=cfg.metrics.num_traj,
+                batch_size=cfg.metrics.batch_size,  # Ignored for a moment
+                top_k=[10, 50, 100],
+                distance_fn=amp_distance_fn,
+            )
+        })
     metrics_state = metrics_module.init(
         eval_init_key,
-        metrics_module.InitArgs(metrics_args={"topk": TopKMetricsModule.InitArgs()}),
+        metrics_module.InitArgs(metrics_args={
+            name: metric.InitArgs() for name, metric in metrics_module.metrics.items()
+        }),
     )
     eval_info = metrics_module.get(metrics_state)
 
@@ -509,22 +566,21 @@ def run_experiment(cfg: OmegaConf) -> None:
 
     # Save the final model
     final_train_state = eqx.combine(final_train_state_params, train_state_static)
-    dir = cfg.logging.checkpoint_dir if cfg.logging.checkpoint_dir else os.path.join(
-        hydra.core.hydra_config.HydraConfig.get().runtime.output_dir,
-        f"checkpoints_{os.getpid()}/",
-    )
     save_checkpoint(
-        os.path.join(dir, "model_and_logZ"),
+        os.path.join(checkpoint_dir, "model_and_logZ"),
         {
             "model": final_train_state.model,
             "logZ": final_train_state.logZ,
         },
     )
     save_sampler_checkpoint(
-        os.path.join(dir, "sampler.npz"),
+        os.path.join(checkpoint_dir, "sampler.npz"),
         final_train_state.model,
         final_train_state.logZ,
     )
+    log.info("Saved AMP sampler checkpoint to %s", os.path.abspath(os.path.join(checkpoint_dir, "sampler.npz")))
+    if cfg.logging.use_writer:
+        writer.finish()
 
 
 if __name__ == "__main__":
