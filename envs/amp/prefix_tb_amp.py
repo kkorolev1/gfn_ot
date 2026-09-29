@@ -74,6 +74,10 @@ def get_eval_fn(get_eval_rollout_fn, env, true_dist, cfg):
         # A separate random stream from training, with independent target draws.
         key_a, key_b = jax.random.split(jax.random.fold_in(jax.random.PRNGKey(cfg.seed), 1729))
         target_a, target_b = get_target_samples(key_a), get_target_samples(key_b)
+        sample_source, _ = env.get_initial_dist()
+        get_source_samples = jax.jit(lambda key: sample_source(key, (max_samples,)))
+        # Independent of rollout starts; reuse the same left sample set in both transports.
+        source = get_source_samples(jax.random.fold_in(jax.random.PRNGKey(cfg.seed), 1731))
         divergence = partial(
             sinkhorn_divergence_hamming, epsilon=float(sd_cfg.epsilon),
             threshold=float(sd_cfg.threshold), max_iterations=int(sd_cfg.max_iterations),
@@ -82,13 +86,18 @@ def get_eval_fn(get_eval_rollout_fn, env, true_dist, cfg):
 
         def target_baseline(count):
             if count not in target_baselines:
-                target_baselines[count] = divergence(target_a[:count], target_b[:count])
+                target_baselines[count] = (
+                    divergence(target_a[:count], target_b[:count]),
+                    divergence(source[:count], target_a[:count]),
+                )
             return target_baselines[count]
 
+        target_sd, target_transport_sd = target_baseline(max_samples)
         logger.update({
             "sd": [], "sd_num_samples": [],
-            "target_sd": [target_baseline(max_samples)],
+            "target_sd": [target_sd],
             "target_sd_num_samples": [max_samples],
+            "transport_sd": [], "target_transport_sd": [target_transport_sd],
         })
 
     def short_eval(model_state, key):
@@ -106,6 +115,7 @@ def get_eval_fn(get_eval_rollout_fn, env, true_dist, cfg):
         if use_sd:
             # Never re-log a previous model's SD when this batch is all forced stops.
             logger["sd"] = []
+            logger["transport_sd"] = []
             logger["sd_num_samples"] = [0]
         if bool(jnp.any(completed)):
             log_rewards = get_log_rewards(terminal_states)
@@ -121,8 +131,11 @@ def get_eval_fn(get_eval_rollout_fn, env, true_dist, cfg):
                     indices = jax.random.choice(sample_key, samples.shape[0], (count,), replace=False)
                     samples = samples[indices]
                 logger["sd"] = [divergence(samples, target_a[:count])]
-                # Match both baseline batch sizes to the accepted model sample count.
-                logger["target_sd"] = [target_baseline(count)]
+                logger["transport_sd"] = [divergence(source[:count], samples)]
+                # Match all comparisons to the accepted model sample count.
+                target_sd, target_transport_sd = target_baseline(count)
+                logger["target_sd"] = [target_sd]
+                logger["target_transport_sd"] = [target_transport_sd]
                 logger["sd_num_samples"] = [count]
                 logger["target_sd_num_samples"] = [count]
         return logger
