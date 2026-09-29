@@ -55,8 +55,8 @@ logging:
 writer:
   writer_type: comet # wandb, trackio or null (no logging online)
   save_locally: true # Save metrics locally or not
-  entity: gfn-sampling
-  project: mctx
+  entity: null
+  project: gfn_ot
 
 # Technical information for hydra
 hydra:
