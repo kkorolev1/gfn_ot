@@ -1,7 +1,55 @@
+from functools import partial
+import math
+
 import jax
 import jax.numpy as jnp
 
+from envs.amp.autoregressive import AutoregressiveSampler
 from envs.tfbind.prefix_tb_tfbind import prefix_tb_tfbind_trainer
+from libs.gfnx.baselines.utils.amp_reward import resolve_sampler_checkpoint
+
+
+@partial(jax.jit, static_argnames=("epsilon", "threshold", "max_iterations"))
+def _sinkhorn_divergence_hamming(x, y, epsilon, threshold, max_iterations):
+    from ott.geometry.geometry import Geometry
+    from ott.tools.sinkhorn_divergence import sinkhorn_divergence
+
+    def cost(lhs, rhs):
+        return jnp.sum(lhs[:, None, :] != rhs[None, :, :], axis=-1, dtype=jnp.float32)
+
+    result = sinkhorn_divergence(
+        Geometry,
+        cost_matrix=(cost(x, y), cost(x, x), cost(y, y)),
+        epsilon=epsilon, relative_epsilon=False, scale_cost=1.0,
+        sinkhorn_kwargs={
+            "threshold": threshold, "max_iterations": max_iterations, "lse_mode": True,
+        },
+    )
+    return result.divergence, jnp.all(jnp.asarray(result.converged))
+
+
+def sinkhorn_divergence_hamming(x, y, epsilon=1.0, threshold=1e-4, max_iterations=2000):
+    """Debiased entropic OT between empirical laws, with unit-cost residue edits.
+
+    S_eps(x,y) = OT_eps(x,y) - (OT_eps(x,x) + OT_eps(y,y))/2.
+    All three terms include entropy and use the same absolute epsilon.
+    """
+    x, y = jnp.asarray(x), jnp.asarray(y)
+    if x.ndim != 2 or y.ndim != 2 or x.shape[1] != y.shape[1]:
+        raise ValueError("Sinkhorn inputs must be batches of equal-length sequences")
+    if x.shape[0] == 0 or y.shape[0] == 0:
+        raise ValueError("Sinkhorn inputs must contain at least one sample")
+    if not math.isfinite(epsilon) or epsilon <= 0:
+        raise ValueError("Sinkhorn epsilon must be finite and positive")
+    if not math.isfinite(threshold) or threshold <= 0 or max_iterations < 1:
+        raise ValueError("Sinkhorn threshold and max_iterations must be positive")
+    value, converged = _sinkhorn_divergence_hamming(x, y, epsilon, threshold, max_iterations)
+    value = float(value)
+    if not bool(converged) or not math.isfinite(value):
+        raise RuntimeError("Sinkhorn did not converge; increase sinkhorn.max_iterations or epsilon")
+    if value < -1e-4:
+        raise RuntimeError(f"Numerically negative Sinkhorn divergence: {value}; tighten threshold")
+    return max(value, 0.0)  # Remove only floating-point roundoff near zero.
 
 
 def get_eval_fn(get_eval_rollout_fn, env, true_dist, cfg):
@@ -12,6 +60,36 @@ def get_eval_fn(get_eval_rollout_fn, env, true_dist, cfg):
         "traj_length/max": [], "traj_length/mean": [],
         "traj_length/truncated_fraction": [],
     }
+    sd_cfg = getattr(cfg, "sinkhorn", None)
+    use_sd = sd_cfg is not None and sd_cfg.target_checkpoint is not None
+    if use_sd:
+        target_checkpoint = resolve_sampler_checkpoint(sd_cfg.target_checkpoint)
+        target_sampler = AutoregressiveSampler.load(target_checkpoint)
+        if target_sampler.max_length != env.max_length or target_sampler.nchar != env.nchar:
+            raise ValueError("The Sinkhorn target checkpoint must match the AMP length/alphabet")
+        max_samples = min(int(sd_cfg.sample_size), int(cfg.eval_batch_size))
+        if max_samples < 1:
+            raise ValueError("Sinkhorn sample_size and eval_batch_size must be positive")
+        get_target_samples = jax.jit(lambda key: target_sampler.sample(key, (max_samples,)))
+        # A separate random stream from training, with independent target draws.
+        key_a, key_b = jax.random.split(jax.random.fold_in(jax.random.PRNGKey(cfg.seed), 1729))
+        target_a, target_b = get_target_samples(key_a), get_target_samples(key_b)
+        divergence = partial(
+            sinkhorn_divergence_hamming, epsilon=float(sd_cfg.epsilon),
+            threshold=float(sd_cfg.threshold), max_iterations=int(sd_cfg.max_iterations),
+        )
+        target_baselines = {}
+
+        def target_baseline(count):
+            if count not in target_baselines:
+                target_baselines[count] = divergence(target_a[:count], target_b[:count])
+            return target_baselines[count]
+
+        logger.update({
+            "sd": [], "sd_num_samples": [],
+            "target_sd": [target_baseline(max_samples)],
+            "target_sd_num_samples": [max_samples],
+        })
 
     def short_eval(model_state, key):
         trajectories, lengths = get_rollout(key, model_state, model_state.params)
@@ -25,12 +103,28 @@ def get_eval_fn(get_eval_rollout_fn, env, true_dist, cfg):
         logger["log_reward/mean"] = []
         logger["data/terminal_marginals"] = []
         logger["figures/terminal_marginals_vis"] = []
+        if use_sd:
+            # Never re-log a previous model's SD when this batch is all forced stops.
+            logger["sd"] = []
+            logger["sd_num_samples"] = [0]
         if bool(jnp.any(completed)):
             log_rewards = get_log_rewards(terminal_states)
             logger["log_reward/mean"] = [jnp.mean(log_rewards[completed])]
             marginals = env.get_position_marginals(terminal_states[completed])
             logger["data/terminal_marginals"] = [marginals]
             logger.update(env.visualize(marginals, prefix="terminal_marginals"))
+            if use_sd:
+                samples = terminal_states[completed]
+                count = min(samples.shape[0], max_samples)
+                if samples.shape[0] > count:
+                    sample_key = jax.random.fold_in(key, 1730)
+                    indices = jax.random.choice(sample_key, samples.shape[0], (count,), replace=False)
+                    samples = samples[indices]
+                logger["sd"] = [divergence(samples, target_a[:count])]
+                # Match both baseline batch sizes to the accepted model sample count.
+                logger["target_sd"] = [target_baseline(count)]
+                logger["sd_num_samples"] = [count]
+                logger["target_sd_num_samples"] = [count]
         return logger
 
     return short_eval, logger
