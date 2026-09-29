@@ -2,6 +2,7 @@ name: prefix_tb_amp
 
 env:
   _target_: envs.amp.amp.AMPEnvironment
+  reward_type: power # power: p(x)**beta; charge: p(x)*exp(-beta*net_charge(x))
   beta: 2.0
   checkpoint: envs/amp/checkpoint/sampler.npz
 
@@ -12,7 +13,7 @@ eval_rollout_max_length: 100
 eval_batch_size: 16
 
 sinkhorn:
-  # Second acyclic GFlowNet trained on this source model's p(x)**beta.
+  # Second acyclic GFlowNet trained with the same source, reward_type, and beta.
   target_checkpoint: envs/amp/checkpoint/sampler_tempered_beta=2.npz
   # Use min(sample_size, number of naturally completed eval trajectories).
   sample_size: 2048

@@ -1,0 +1,12 @@
+# Train a second acyclic GFlowNet with R(x) = p_ref(x) * exp(-beta * net_charge(x)).
+defaults:
+  - tb_amp
+  - _self_
+
+init_logZ: null
+init_logZ_num_samples: 256
+
+environment:
+  reward_type: charge
+  sampler_checkpoint: envs/amp/checkpoint/sampler.npz
+  beta: 2.0

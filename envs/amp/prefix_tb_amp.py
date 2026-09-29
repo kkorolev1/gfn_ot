@@ -144,7 +144,7 @@ def get_eval_fn(get_eval_rollout_fn, env, true_dist, cfg):
 
 
 def prefix_tb_amp_trainer(cfg, experiment_logger):
-    # Keep rewards as p(x)**beta. Only rescale the flow penalty, whose raw
+    # Keep the selected rewards in log space. Only rescale the flow penalty, whose raw
     # exponentials otherwise underflow for length-60 sequences in float32.
     if cfg.init_logZ is None or cfg.flow_penalty_log_scale is None:
         sample, log_prob = cfg.env.get_initial_dist()
@@ -153,13 +153,13 @@ def prefix_tb_amp_trainer(cfg, experiment_logger):
         def calibrate(key):
             states = sample(key, (cfg.batch_size,))
             log_p = log_prob(states)
-            log_r = cfg.env.beta * log_p
+            log_r = cfg.env.log_reward(states)
             log_z = jax.nn.logsumexp(log_r - log_p) - jnp.log(cfg.batch_size)
             return log_z, -jnp.max(log_r)
 
         log_z, log_scale = calibrate(jax.random.PRNGKey(cfg.seed))
         if cfg.init_logZ is None:
-            # Importance estimate E_p[p(x)**(beta-1)], used only to initialize Z.
+            # Importance estimate E_p[R(x)/p(x)], used only to initialize Z.
             cfg.init_logZ = float(log_z)
         if cfg.flow_penalty_log_scale is None:
             cfg.flow_penalty_log_scale = float(log_scale)

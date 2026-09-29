@@ -31,7 +31,7 @@ network:
   attention_dropout_rate: 0.0
 
 environment:
-  reward_type: proxy # proxy or gflownet
+  reward_type: proxy # proxy, gflownet (p**beta), or charge (p*exp(-beta*net_charge))
   sampler_checkpoint: null
   beta: 2.0
   proxy_config_path: proxy/configs/amp.yaml

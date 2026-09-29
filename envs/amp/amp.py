@@ -4,18 +4,18 @@ import matplotlib.pyplot as plt
 
 from envs.amp.autoregressive import AutoregressiveSampler
 from envs.amp.tokens import AMINO_ACIDS, PROTEINS_FULL_ALPHABET
+from libs.gfnx.baselines.utils.amp_reward import gflownet_log_reward, validate_gflownet_reward
 
 
 class AMPEnvironment:
     """Length-60 proteins with single amino-acid replacements and a stop action.
 
-    The frozen sampler defines fixed-length p(x); L(x)=p(x), R(x)=p(x)**beta.
+    L(x)=p(x); R(x)=p(x)**beta or p(x)*exp(-beta*net_charge(x)).
     BOS, EOS and PAD retain GFNx's IDs but are never editable residues.
     """
 
-    def __init__(self, beta=2.0, checkpoint=None, sampler=None):
-        if beta <= 0:
-            raise ValueError("beta must be positive")
+    def __init__(self, beta=2.0, checkpoint=None, sampler=None, reward_type="power"):
+        validate_gflownet_reward(beta, reward_type)
         self.max_length = 60
         self.nchar = len(AMINO_ACIDS)
         self.ntoken = len(PROTEINS_FULL_ALPHABET)
@@ -24,6 +24,7 @@ class AMPEnvironment:
         self.eos_token = self.char_to_id["[EOS]"]
         self.pad_token = self.char_to_id["[PAD]"]
         self.beta = beta
+        self.reward_type = reward_type
         self.stop_action = self.max_length * self.nchar
         self.num_actions = self.stop_action + 1
         self.sampler = AutoregressiveSampler.load(checkpoint) if checkpoint else sampler
@@ -50,7 +51,8 @@ class AMPEnvironment:
         return log_prob(states)
 
     def log_reward(self, states):
-        return self.beta * self.log_initial_reward(states)
+        log_p = self.log_initial_reward(states)
+        return gflownet_log_reward(log_p, states, self.beta, self.reward_type)
 
     def log_terminal_reward(self, states):
         return self.log_reward(states)

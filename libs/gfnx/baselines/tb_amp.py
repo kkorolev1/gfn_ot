@@ -365,13 +365,16 @@ def run_experiment(cfg: OmegaConf) -> None:
     eval_init_key = jax.random.PRNGKey(cfg.eval_init_seed)
 
     # Define the reward function for the environment
-    if cfg.environment.reward_type == "gflownet":
+    use_teacher_reward = cfg.environment.reward_type in ("gflownet", "charge")
+    if use_teacher_reward:
         reward_module = GFlowNetAMPRewardModule(
             checkpoint=cfg.environment.sampler_checkpoint,
             beta=cfg.environment.beta,
+            reward_type="charge" if cfg.environment.reward_type == "charge" else "power",
         )
         cfg.environment.sampler_checkpoint = str(reward_module.checkpoint)
-        log.info("Frozen AMP teacher: %s; beta: %s", reward_module.checkpoint, reward_module.beta)
+        log.info("Frozen AMP teacher: %s; reward: %s; beta: %s",
+                 reward_module.checkpoint, reward_module.reward_type, reward_module.beta)
         env = FixedLengthAMPEnvironment(reward_module)
     elif cfg.environment.reward_type == "proxy":
         reward_module = gfnx.EqxProxyAMPRewardModule(
@@ -389,7 +392,7 @@ def run_experiment(cfg: OmegaConf) -> None:
         hydra.core.hydra_config.HydraConfig.get().runtime.output_dir,
         f"checkpoints_{os.getpid()}/",
     )
-    if cfg.environment.reward_type == "gflownet":
+    if use_teacher_reward:
         if (Path(checkpoint_dir) / "sampler.npz").resolve() == reward_module.checkpoint:
             raise ValueError("Choose a checkpoint_dir that does not overwrite the frozen teacher")
 
@@ -417,7 +420,7 @@ def run_experiment(cfg: OmegaConf) -> None:
     # Initialize logZ separately
     if cfg.init_logZ is not None:
         logZ = jnp.array(cfg.init_logZ, dtype=jnp.float32)
-    elif cfg.environment.reward_type == "gflownet":
+    elif use_teacher_reward:
         rng_key, logZ_key = jax.random.split(rng_key)
         logZ = reward_module.estimate_log_partition(
             logZ_key, num_samples=cfg.init_logZ_num_samples, batch_size=cfg.num_envs,
@@ -474,8 +477,8 @@ def run_experiment(cfg: OmegaConf) -> None:
             lhs_state.tokens, rhs_state.tokens, eos_id=env.eos_token, pad_id=env.pad_token
         )
 
-    if cfg.environment.reward_type == "gflownet":
-        # p(x)**beta can underflow in float32. ELBO evaluates in log space
+    if use_teacher_reward:
+        # Teacher-based rewards can underflow in float32. ELBO evaluates in log space
         # and respects the evaluation batch size for the frozen Transformer.
         if cfg.metrics.num_traj < 1 or cfg.metrics.batch_size < 1:
             raise ValueError("Evaluation sample and batch sizes must be positive")
