@@ -521,6 +521,11 @@ def prefix_tb_tfbind_trainer(cfg, experiment_logger: Logger, eval_fn_factory=Non
             f"Target vs target ({cfg.eval_buffer_size} samples per subset): "
             f"TV: {logger['target/tv'][-1]:.4f}"
         )
+    if logger.get("target_sd"):
+        print(
+            f"Target vs target ({logger['target_sd_num_samples'][-1]} samples per subset): "
+            f"SD: {logger['target_sd'][-1]:.4f}"
+        )
 
     def evaluate(model_state, key, step, losses=None):
         eval_key, buffer_key = jax.random.split(key)
@@ -529,10 +534,12 @@ def prefix_tb_tfbind_trainer(cfg, experiment_logger: Logger, eval_fn_factory=Non
 
         loss_info = "" if losses is None else f"Loss: {jnp.mean(losses):.4f}, "
         tv_info = f"TV: {logger['tv'][-1]:.4f}, " if logger.get("tv") else ""
+        sd_info = f"SD: {logger['sd'][-1]:.4f}, " if logger.get("sd") else ""
         print(
             f"[{step}/{cfg.train_num_steps}] "
             f"{loss_info}"
             f"{tv_info}"
+            f"{sd_info}"
             f"Max Len: {logger['traj_length/max'][-1]:.4f}, "
             f"Mean Len: {logger['traj_length/mean'][-1]:.4f}"
         )
