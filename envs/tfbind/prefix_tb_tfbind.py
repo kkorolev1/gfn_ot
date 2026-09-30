@@ -533,13 +533,20 @@ def prefix_tb_tfbind_trainer(cfg, experiment_logger: Logger, eval_fn_factory=Non
         experiment_logger.save_checkpoint(model_state)
 
         loss_info = "" if losses is None else f"Loss: {jnp.mean(losses):.4f}, "
-        tv_info = f"TV: {logger['tv'][-1]:.4f}, " if logger.get("tv") else ""
-        sd_info = f"SD: {logger['sd'][-1]:.4f}, " if logger.get("sd") else ""
+        metrics_info = "".join(
+            f"{label}: {logger[name][-1]:.4f}, "
+            for name, label in (
+                ("tv", "TV"), ("sd", "SD"),
+                ("elbo", "ELBO"), ("eubo", "EUBO"),
+                ("sinkhorn", "Sinkhorn"), ("magnetization", "Mag"),
+                ("correlation", "Corr"),
+            )
+            if logger.get(name)
+        )
         print(
             f"[{step}/{cfg.train_num_steps}] "
             f"{loss_info}"
-            f"{tv_info}"
-            f"{sd_info}"
+            f"{metrics_info}"
             f"Max Len: {logger['traj_length/max'][-1]:.4f}, "
             f"Mean Len: {logger['traj_length/mean'][-1]:.4f}"
         )
