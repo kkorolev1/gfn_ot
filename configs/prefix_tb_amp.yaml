@@ -17,7 +17,7 @@ sinkhorn:
   target_checkpoint: envs/amp/checkpoint/sampler_tempered_beta=2.npz
   # Use min(sample_size, number of naturally completed eval trajectories).
   sample_size: 2048
-  epsilon: 1e-3 # Absolute regularization in Hamming-distance units (one edit = 1).
+  epsilon: 1e-1 # Absolute regularization in Hamming-distance units (one edit = 1).
   threshold: 1e-4
   max_iterations: 2000
 

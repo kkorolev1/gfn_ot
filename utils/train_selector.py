@@ -11,5 +11,9 @@ def get_train_fn(alg_name):
         from envs.amp.prefix_tb_amp import prefix_tb_amp_trainer
 
         return prefix_tb_amp_trainer
+    elif alg_name == "prefix_tb_ising":
+        from envs.ising.prefix_tb_ising import prefix_tb_ising_trainer
+
+        return prefix_tb_ising_trainer
     else:
         raise ValueError(f"Unknown algorithm {alg_name}.")

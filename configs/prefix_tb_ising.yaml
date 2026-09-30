@@ -1,0 +1,61 @@
+name: prefix_tb_ising
+
+env:
+  _target_: envs.ising.ising.IsingEnvironment
+  lattice_size: 16
+  beta_left: 0.6
+  beta_right: 1.2
+  coupling: 1.0
+
+train_rollout_max_length: 256
+train_num_steps: 100000
+eval_rollout_max_length: 256
+eval_batch_size: 16384  # Evaluation sample count in the paper.
+
+# Null reports ELBO/EUBO on log(Z_R/Z_L). Supply exact log Z_L to shift bounds
+# to the paper's absolute log Z_R convention. Learned logZ remains a ratio.
+source_logZ: null
+init_logZ: null
+flow_penalty_log_scale: null
+lr: 1e-3
+logZ_lr: 1e-1
+grad_clip: 0
+reg_coef: 0.1
+use_weights: False
+
+model:
+  max_length: 256  # Must equal env.lattice_size**2.
+  nchar: 2
+  num_layers: 3
+  num_hid: 256
+
+lr_schedule:
+  type: multistep
+  milestones: [1000, 2000, 3000, 4000]
+  gamma: 0.95
+
+# Used ONLY by evaluation; training starts are uniform on all binary lattices.
+# Seed, energy parameters, sample count and all MCMC settings enter cache keys.
+reference:
+  cache_dir: envs/ising
+  num_samples: 16384
+  num_chains: 128
+  burn_in: 65536  # 2**16 updates per chain, as in the reference target factory.
+  thinning: 1024  # 2**10 updates between saved samples per chain.
+
+sinkhorn:
+  sample_size: 16384
+  epsilon: 1e-3  # Absolute Hamming units, as in the paper.
+  threshold: 1e-6
+  max_iterations: 10000
+
+buffer:
+  use: False
+  replay_ratio: 2
+  max_length_in_batches: 100
+  prioritize_by: reward
+  sampling_method: systematic
+  rank_k: 0.01
+  sample_with_replacement: True
+  prefill_steps: 0
+  update_score: False
