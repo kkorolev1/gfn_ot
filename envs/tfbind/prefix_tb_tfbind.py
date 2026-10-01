@@ -300,15 +300,15 @@ def prefix_tb_loss_fn(
         weights = jnp.ones((batch_size, 1)) / rollout_length
 
     tb_losses = jnp.square(discrepancy) * weights
-    flow_penalties = (
-        reg_coef * jnp.exp(log_flows + flow_penalty_log_scale) * weights
-        if reg_coef != 0 else jnp.zeros_like(tb_losses)
-    )
+    flows = jnp.exp(log_flows + flow_penalty_log_scale) * weights
+    flow_penalties = reg_coef * flows if reg_coef != 0 else jnp.zeros_like(tb_losses)
     losses = tb_losses.sum(-1) + flow_penalties.sum(-1)
     return jnp.mean(losses), (
         terminal_states,
         log_rewards[:, -1],
         jax.lax.stop_gradient(losses),
+        jax.lax.stop_gradient(tb_losses),
+        jax.lax.stop_gradient(flows),
     )
 
 
@@ -489,7 +489,9 @@ def prefix_tb_tfbind_trainer(cfg, experiment_logger: Logger, eval_fn_factory=Non
         )
 
     loss_fn_base = partial(
-        prefix_tb_loss_fn, reg_coef=cfg.reg_coef, use_weights=cfg.use_weights,
+        prefix_tb_loss_fn,
+        reg_coef=cfg.reg_coef,
+        use_weights=cfg.use_weights,
         flow_penalty_log_scale=getattr(cfg, "flow_penalty_log_scale", 0.0),
     )
 
@@ -536,9 +538,12 @@ def prefix_tb_tfbind_trainer(cfg, experiment_logger: Logger, eval_fn_factory=Non
         metrics_info = "".join(
             f"{label}: {logger[name][-1]:.4f}, "
             for name, label in (
-                ("tv", "TV"), ("sd", "SD"),
-                ("elbo", "ELBO"), ("eubo", "EUBO"),
-                ("sinkhorn", "Sinkhorn"), ("magnetization", "Mag"),
+                ("tv", "TV"),
+                ("sd", "SD"),
+                ("elbo", "ELBO"),
+                ("eubo", "EUBO"),
+                ("sinkhorn", "Sinkhorn"),
+                ("magnetization", "Mag"),
                 ("correlation", "Corr"),
             )
             if logger.get(name)
@@ -556,15 +561,17 @@ def prefix_tb_tfbind_trainer(cfg, experiment_logger: Logger, eval_fn_factory=Non
                 buffer_state, buffer_key, batch_size
             )
             if env.is_enumerable:
-                buffer_empirical_dist = env.get_empirical_distribution(buffer_terminal_states)
+                buffer_empirical_dist = env.get_empirical_distribution(
+                    buffer_terminal_states
+                )
                 buffer_name = "buffer_empirical_dist"
             else:
-                buffer_empirical_dist = env.get_position_marginals(buffer_terminal_states)
+                buffer_empirical_dist = env.get_position_marginals(
+                    buffer_terminal_states
+                )
                 buffer_name = "buffer_position_marginals"
             logger[f"data/{buffer_name}"] = [buffer_empirical_dist]
-            logger.update(
-                env.visualize(buffer_empirical_dist, prefix=buffer_name)
-            )
+            logger.update(env.visualize(buffer_empirical_dist, prefix=buffer_name))
 
         experiment_logger.log_evaluation(logger, step=step)
 
@@ -574,9 +581,13 @@ def prefix_tb_tfbind_trainer(cfg, experiment_logger: Logger, eval_fn_factory=Non
     for step in range(cfg.train_num_steps):
         if not use_buffer or step % (buffer_cfg.replay_ratio + 1) == 0:
             key, key_gen = jax.random.split(key_gen)
-            grads, (terminal_states, terminal_log_rewards, losses) = loss_fwd_grad_fn(
-                key, model_state, model_state.params
-            )
+            grads, (
+                terminal_states,
+                terminal_log_rewards,
+                losses,
+                tb_losses,
+                flow_penalties,
+            ) = loss_fwd_grad_fn(key, model_state, model_state.params)
             model_state = model_state.apply_gradients(grads=grads)
 
             # Add samples to buffer
@@ -594,7 +605,7 @@ def prefix_tb_tfbind_trainer(cfg, experiment_logger: Logger, eval_fn_factory=Non
             )
 
             key, key_gen = jax.random.split(key_gen)
-            grads, (_, _, losses) = loss_bwd_grad_fn(
+            grads, (_, _, losses, tb_losses, flow_penalties) = loss_bwd_grad_fn(
                 key,
                 model_state,
                 model_state.params,
@@ -606,6 +617,8 @@ def prefix_tb_tfbind_trainer(cfg, experiment_logger: Logger, eval_fn_factory=Non
         experiment_logger.log_metrics(
             {
                 "loss": jnp.mean(losses),
+                "tb_loss": jnp.mean(tb_losses),
+                "flow_penalties": jnp.mean(flow_penalties),
                 "logZ_learned": model_state.params["params"]["logZ"],
             },
             step=step + 1,
