@@ -21,12 +21,13 @@ class Model(flax_nn.Module):
     nchar: int = 4
     num_layers: int = 2
     num_hid: int = 64
+    adjacent_swaps: bool = False
 
     weight_init: float = 1e-8
     bias_init: float = 1e-1
 
     def setup(self):
-        self.num_actions = 2 * (self.max_length * self.nchar + 1)
+        self.num_actions = 2 * (self.max_length if self.adjacent_swaps else self.max_length * self.nchar + 1)
 
         self.model = flax_nn.Sequential(
             [
@@ -47,10 +48,14 @@ class Model(flax_nn.Module):
         encoded = encoded.reshape((*states.shape[:-1], self.max_length * self.nchar))
         logits = self.model(encoded)
         forward_logits, backward_logits = jnp.split(logits, 2, axis=-1)
-        mask = encoded.astype(bool)
-        mask = jnp.concatenate(
-            (mask, jnp.zeros((*states.shape[:-1], 1), dtype=bool)), axis=-1
-        )
+        if self.adjacent_swaps:
+            # All n-1 adjacent swaps and the final stop action are valid.
+            mask = jnp.zeros_like(forward_logits, dtype=bool)
+        else:
+            mask = encoded.astype(bool)
+            mask = jnp.concatenate(
+                (mask, jnp.zeros((*states.shape[:-1], 1), dtype=bool)), axis=-1
+            )
         log_pfs = nn.log_softmax(jnp.where(mask, -jnp.inf, forward_logits), axis=-1)
         log_pbs = nn.log_softmax(jnp.where(mask, -jnp.inf, backward_logits), axis=-1)
 
@@ -115,7 +120,8 @@ def init_model(key_gen, cfg):
     params["params"] = {**params["params"], "logZ": jnp.array((init_logZ,))}
     optimizers_map = {
         "model_optim": optax.adam(learning_rate=build_lr_schedule(cfg.lr)),
-        "logZ_optim": optax.adam(learning_rate=build_lr_schedule(cfg.logZ_lr)),
+        "logZ_optim": (optax.set_to_zero() if cfg.logZ_lr == 0 else
+                       optax.adam(learning_rate=build_lr_schedule(cfg.logZ_lr))),
     }
     param_labels = path_aware_map(model_label_map, params)
     partitioned_optimizer = optax.multi_transform(optimizers_map, param_labels)
@@ -519,7 +525,7 @@ def prefix_tb_tfbind_trainer(cfg, experiment_logger: Logger, eval_fn_factory=Non
     eval_fn, logger = eval_fn_factory(get_eval_rollout_base, env, true_dist, cfg)
     if logger.get("target/tv"):
         print(
-            f"Target vs target ({cfg.eval_buffer_size} samples per subset): "
+            f"Target sampling baseline ({cfg.eval_buffer_size} samples): "
             f"TV: {logger['target/tv'][-1]:.4f}"
         )
     if logger.get("target_sd"):

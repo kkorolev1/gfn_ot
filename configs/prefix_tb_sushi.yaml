@@ -1,0 +1,42 @@
+name: prefix_tb_sushi
+
+env:
+  _target_: envs.sushi.sushi.SushiEnvironment
+  checkpoint: envs/sushi/checkpoint/plackett_luce_gender.npz
+
+train_rollout_max_length: 15
+train_num_steps: 100000
+eval_rollout_max_length: 100
+eval_batch_size: 50000
+
+# Both endpoints are normalized: log(Z_R / Z_L) is known and frozen.
+init_logZ: 0.0
+logZ_lr: 0.0
+lr: 1e-3
+grad_clip: 0
+# The shared loss currently uses exp(reg_coef + log_flow); zero disables it.
+reg_coef: 10.0
+use_weights: False
+
+model:
+  max_length: 10
+  nchar: 10
+  adjacent_swaps: True
+  num_layers: 3
+  num_hid: 256
+
+lr_schedule:
+  type: multistep
+  milestones: [1000, 2000, 3000, 4000]
+  gamma: 0.95
+
+buffer:
+  use: False
+  replay_ratio: 2
+  max_length_in_batches: 100
+  prioritize_by: reward
+  sampling_method: systematic
+  rank_k: 0.01
+  sample_with_replacement: True
+  prefill_steps: 0
+  update_score: False

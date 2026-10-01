@@ -217,7 +217,11 @@ class CometLogger(JSONLogger):
 
     def log_metrics(self, metrics, step):
         super().log_metrics(metrics, step)
-        values = {name: value for name, value in _scalar_metrics(metrics).items() if value is not None}
+        # Comet converts bools to strings instead of numeric metrics.
+        values = {
+            name: int(value) if isinstance(value, bool) else value
+            for name, value in _scalar_metrics(metrics).items() if value is not None
+        }
         self.experiment.log_metrics(values, step=int(step))
 
     def log_figure(self, figure, figure_name, step):
