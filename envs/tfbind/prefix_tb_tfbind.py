@@ -269,7 +269,6 @@ def prefix_tb_loss_fn(
     get_train_rollout_fn,
     reg_coef: float = 0.0,
     use_weights: bool = False,
-    flow_penalty_log_scale: float = 0.0,
 ):
     terminal_states, log_pfs_over_pbs, log_rewards, log_flows = get_train_rollout_fn(
         key, model_state, params
@@ -300,15 +299,15 @@ def prefix_tb_loss_fn(
         weights = jnp.ones((batch_size, 1)) / rollout_length
 
     tb_losses = jnp.square(discrepancy) * weights
-    flows = jnp.exp(log_flows + flow_penalty_log_scale) * weights
-    flow_penalties = reg_coef * flows if reg_coef != 0 else jnp.zeros_like(tb_losses)
+    flow_penalties = jnp.exp(jnp.log(reg_coef) + log_flows) * weights
+    flow_penalties = flow_penalties if reg_coef != 0 else jnp.zeros_like(flow_penalties)
     losses = tb_losses.sum(-1) + flow_penalties.sum(-1)
     return jnp.mean(losses), (
         terminal_states,
         log_rewards[:, -1],
         jax.lax.stop_gradient(losses),
         jax.lax.stop_gradient(tb_losses),
-        jax.lax.stop_gradient(flows),
+        jax.lax.stop_gradient(flow_penalties),
     )
 
 
@@ -492,7 +491,6 @@ def prefix_tb_tfbind_trainer(cfg, experiment_logger: Logger, eval_fn_factory=Non
         prefix_tb_loss_fn,
         reg_coef=cfg.reg_coef,
         use_weights=cfg.use_weights,
-        flow_penalty_log_scale=getattr(cfg, "flow_penalty_log_scale", 0.0),
     )
 
     @partial(jax.jit)
