@@ -299,7 +299,8 @@ def prefix_tb_loss_fn(
         weights = jnp.ones((batch_size, 1)) / rollout_length
 
     tb_losses = jnp.square(discrepancy) * weights
-    flow_penalties = jnp.exp(jnp.log(reg_coef) + log_flows) * weights
+    # TODO: Rename it to log_reg_coef
+    flow_penalties = jnp.exp(reg_coef + log_flows) * weights
     flow_penalties = flow_penalties if reg_coef != 0 else jnp.zeros_like(flow_penalties)
     losses = tb_losses.sum(-1) + flow_penalties.sum(-1)
     return jnp.mean(losses), (
