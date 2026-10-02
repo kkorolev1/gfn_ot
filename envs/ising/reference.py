@@ -1,4 +1,4 @@
-"""Cached Swendsen-Wang samples used only for Ising evaluation."""
+"""Swendsen-Wang sampling and cached Ising evaluation references."""
 
 import hashlib
 import json
@@ -16,7 +16,6 @@ def sample_reference(env, beta, num_samples, seed=0, num_chains=128, burn_in=655
 
     Bond probability is 1-exp(-2*beta*J). Connected components get independent
     fair binary spins. A block-diagonal graph handles all chains in one call.
-    No MCMC samples enter the prefix-TB training proposal.
     """
     if num_samples < 1 or num_chains < 1 or burn_in < 0 or thinning < 1:
         raise ValueError("Invalid reference sample count or MCMC settings")

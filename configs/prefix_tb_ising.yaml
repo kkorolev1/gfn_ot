@@ -34,7 +34,6 @@ lr_schedule:
   milestones: [1000, 2000, 3000, 4000]
   gamma: 0.95
 
-# Used ONLY by evaluation; training starts are uniform on all binary lattices.
 # Seed, energy parameters, sample count and all MCMC settings enter cache keys.
 reference:
   cache_dir: envs/ising
@@ -48,6 +47,15 @@ sinkhorn:
   epsilon: 1e-3  # Absolute Hamming units, as in the paper.
   threshold: 1e-6
   max_iterations: 10000
+
+initial_state_source: uniform
+
+initial_buffer:
+  num_samples: 16384
+  update_frequency: 1000
+  num_chains: 128
+  burn_in: 1024
+  thinning: 16
 
 buffer:
   use: False

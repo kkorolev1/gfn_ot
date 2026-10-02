@@ -9,8 +9,8 @@ import numpy as np
 class IsingEnvironment:
     """Periodic, zero-field Ising bridge with binary tokens and single-spin edits.
 
-    Spins are 2 * tokens - 1. L and R are unnormalized Ising weights, while
-    training states are proposed uniformly. The prefix-TB logZ is log(Z_R/Z_L).
+    Spins are 2 * tokens - 1. L and R are unnormalized Ising weights.
+    The prefix-TB logZ is log(Z_R/Z_L).
     """
 
     def __init__(self, lattice_size=16, beta_left=0.6, beta_right=1.2, coupling=1.0):
