@@ -16,7 +16,6 @@ eval_batch_size: 16384  # Evaluation sample count in the paper.
 # to the paper's absolute log Z_R convention. Learned logZ remains a ratio.
 source_logZ: null
 init_logZ: null
-flow_penalty_log_scale: null
 lr: 1e-3
 logZ_lr: 1e-1
 grad_clip: 0

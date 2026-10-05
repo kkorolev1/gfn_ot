@@ -1,0 +1,65 @@
+{
+  "format_version": 1,
+  "model": "Plackett-Luce",
+  "dataset_url": "https://www.kamishima.net/asset/sushi3-2016.zip",
+  "archive_sha256": "4f8bbf3acd6f796cb3d0add6c73c394664982c57d3b48e75e92014e5278558a8",
+  "order_file": "sushi3a.5000.10.order",
+  "ordering": "most_preferred_first",
+  "split": "age",
+  "item_names": [
+    "ebi",
+    "anago",
+    "maguro",
+    "ika",
+    "uni",
+    "ikura",
+    "tamago",
+    "toro",
+    "tekka_maki",
+    "kappa_maki"
+  ],
+  "left": {
+    "group": "under_30",
+    "num_rankings": 1711,
+    "mean_nll": 14.24105199896662,
+    "uniform_mean_nll": 15.104412573075514,
+    "iterations": 12,
+    "gradient_max_abs": 1.608000855249514e-08,
+    "converged": true,
+    "worth": [
+      0.12088363689234148,
+      0.08621968822492838,
+      0.14381758374366627,
+      0.0745769127794981,
+      0.05054571302747427,
+      0.09615933940977334,
+      0.059927558934553586,
+      0.24219619133399295,
+      0.0888814245908205,
+      0.03679195106295097
+    ]
+  },
+  "right": {
+    "group": "30_and_over",
+    "num_rankings": 3289,
+    "mean_nll": 14.203987977807746,
+    "uniform_mean_nll": 15.104412573075514,
+    "iterations": 13,
+    "gradient_max_abs": 5.6781171174663195e-09,
+    "converged": true,
+    "worth": [
+      0.1057272270626552,
+      0.09364759741404659,
+      0.1407495308228149,
+      0.0779243718180485,
+      0.08084735084137291,
+      0.09229772399907651,
+      0.04653855968650047,
+      0.24579026204251456,
+      0.08390488813651122,
+      0.03257248817645922
+    ]
+  },
+  "logZ_left": 0.0,
+  "logZ_right": 0.0
+}
