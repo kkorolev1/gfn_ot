@@ -31,7 +31,7 @@ def main(cfg: DictConfig) -> None:
     experiment_logger = create_logger(
         cfg.logger, cfg.log_dir or HydraConfig.get().runtime.output_dir,
         run_name=run_name, checkpoint_filename=cfg.checkpoint_filename,
-        comet_options=comet_options,
+        comet_options=comet_options, log_locally=cfg.log_locally,
     )
     print("logs and checkpoint:", experiment_logger.log_dir)
     with experiment_logger:

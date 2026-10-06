@@ -2,6 +2,7 @@
 
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
+import io
 import json
 import math
 import os
@@ -122,12 +123,14 @@ class JSONLogger(Logger):
     logs.jsonl is append-only, with one complete JSON object per line. run.json
     contains configuration and run status. Non-finite scalar metrics become null.
     Every instance creates its own run subdirectory beneath log_dir.
+    With log_locally=False, only the replaceable checkpoint is written locally.
     """
 
     backend = "json"
 
-    def __init__(self, log_dir, run_name="", checkpoint_filename="checkpoint.msgpack"):
+    def __init__(self, log_dir, run_name="", checkpoint_filename="checkpoint.msgpack", log_locally=True):
         super().__init__(log_dir, checkpoint_filename)
+        self.log_locally = log_locally
         self._closed = False
         self._metadata = {
             "format_version": 1,
@@ -136,14 +139,19 @@ class JSONLogger(Logger):
             "started_at": datetime.now(timezone.utc).isoformat(),
             "status": "running",
         }
-        self._stream = (self.log_dir / "logs.jsonl").open("x", encoding="utf-8")
+        self._stream = ((self.log_dir / "logs.jsonl").open("x", encoding="utf-8")
+                        if self.log_locally else None)
         self._write_metadata()
 
     def _write_metadata(self):
+        if not self.log_locally:
+            return
         data = json.dumps(self._metadata, indent=2, allow_nan=False).encode("utf-8")
         _atomic_write(self.log_dir / "run.json", data)
 
     def _record(self, event_type, **values):
+        if not self.log_locally:
+            return
         event = {"type": event_type, "time": datetime.now(timezone.utc).isoformat(), **values}
         self._stream.write(json.dumps(event, allow_nan=False) + "\n")
         self._stream.flush()
@@ -162,12 +170,16 @@ class JSONLogger(Logger):
         self._record("metrics", step=int(step), metrics=_scalar_metrics(metrics))
 
     def log_figure(self, figure, figure_name, step):
+        if not self.log_locally:
+            return None
         path = self._artifact_path("figures", figure_name, step, "png")
         figure.savefig(path, dpi=150, bbox_inches="tight")
         self._record("figure", name=figure_name, step=int(step), path=str(path.relative_to(self.log_dir)))
         return path
 
     def log_array(self, name, values, step):
+        if not self.log_locally:
+            return None
         path = self._artifact_path("data", name, step, "npz")
         values = np.asarray(values)
         np.savez_compressed(path, data=values)
@@ -189,21 +201,22 @@ class JSONLogger(Logger):
             status="finished" if error is None else "failed", error=error,
             finished_at=datetime.now(timezone.utc).isoformat(),
         )
-        self._stream.close()
+        if self._stream is not None:
+            self._stream.close()
         self._closed = True
         self._write_metadata()
 
 
 class CometLogger(JSONLogger):
-    """Send events to Comet while retaining the same local JSON logs/artifacts."""
+    """Send events to Comet, optionally retaining local JSON logs/artifacts."""
 
     backend = "comet"
 
-    def __init__(self, log_dir, run_name="", checkpoint_filename="checkpoint.msgpack", **comet_options):
+    def __init__(self, log_dir, run_name="", checkpoint_filename="checkpoint.msgpack", log_locally=True, **comet_options):
         # JSON-only runs never import or initialize the Comet SDK.
         from comet_ml import Experiment
 
-        super().__init__(log_dir, run_name, checkpoint_filename)
+        super().__init__(log_dir, run_name, checkpoint_filename, log_locally=log_locally)
         try:
             self.experiment = Experiment(**{key: value for key, value in comet_options.items() if value is not None})
             self.experiment.set_name(run_name)
@@ -231,7 +244,16 @@ class CometLogger(JSONLogger):
 
     def log_array(self, name, values, step):
         path = super().log_array(name, values, step)
-        self.experiment.log_asset(str(path), file_name=path.name, step=int(step))
+        if path is not None:
+            self.experiment.log_asset(str(path), file_name=path.name, step=int(step))
+        else:
+            # Send the same NPZ payload without retaining an array file on disk.
+            with io.BytesIO() as stream:
+                np.savez_compressed(stream, data=np.asarray(values))
+                filename = re.sub(r"[^a-zA-Z0-9_.-]", "_", name)
+                self.experiment.log_asset_data(
+                    stream.getvalue(), name=f"{filename}_{int(step):08d}.npz", step=int(step),
+                )
         return path
 
     def close(self, error=None):
@@ -244,9 +266,10 @@ class CometLogger(JSONLogger):
             super().close(error)
 
 
-def create_logger(backend, log_dir, run_name="", checkpoint_filename="checkpoint.msgpack", comet_options=None):
+def create_logger(backend, log_dir, run_name="", checkpoint_filename="checkpoint.msgpack", comet_options=None, log_locally=True):
     if backend == "json":
-        return JSONLogger(log_dir, run_name, checkpoint_filename)
+        return JSONLogger(log_dir, run_name, checkpoint_filename, log_locally=log_locally)
     if backend == "comet":
-        return CometLogger(log_dir, run_name, checkpoint_filename, **(comet_options or {}))
+        return CometLogger(log_dir, run_name, checkpoint_filename,
+                           log_locally=log_locally, **(comet_options or {}))
     raise ValueError(f"Unknown logger: {backend!r}; choose 'json' or 'comet'")
