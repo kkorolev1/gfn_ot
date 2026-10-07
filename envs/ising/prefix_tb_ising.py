@@ -426,6 +426,8 @@ def get_eval_fn(get_eval_rollout_fn, env, true_dist, cfg):
         "eval/num_completed",
         "eval/num_backward_completed",
         "eval/sinkhorn_num_samples",
+        "transport/mean_flips",
+        "transport/hamming",
         "traj_length/max",
         "traj_length/mean",
         "traj_length/truncated_fraction",
@@ -437,6 +439,33 @@ def get_eval_fn(get_eval_rollout_fn, env, true_dist, cfg):
     logger["data/target_correlations"] = [
         correlation_profile(right_reference, env.lattice_size)
     ]
+    # A fixed source-to-target transport baseline, independent of model rollouts.
+    # Subsample without replacement; repeated states retain their empirical mass.
+    count = min(cfg.sinkhorn.sample_size, len(left_reference), len(right_reference))
+    rng = np.random.default_rng(cfg.seed + 1732)
+    references = [
+        samples
+        if len(samples) == count
+        else samples[rng.choice(len(samples), count, replace=False)]
+        for samples in (left_reference, right_reference)
+    ]
+    reference_transport = sinkhorn_distance(
+        *references,
+        epsilon=cfg.sinkhorn.epsilon,
+        threshold=cfg.sinkhorn.threshold,
+        max_iterations=cfg.sinkhorn.max_iterations,
+    )
+    for name, value in reference_transport.items():
+        logger[f"target/transport_{name}"] = [value]
+    logger["target/transport_num_samples"] = [count]
+    print(
+        f"Reference L -> R Sinkhorn: {reference_transport['sinkhorn']:.6f} flips, "
+        f"samples per side: {count}, "
+        f"converged: {reference_transport['sinkhorn_converged']}, "
+        f"marginal error: {reference_transport['sinkhorn_error']:.3g}"
+    )
+    if not reference_transport["sinkhorn_converged"]:
+        print("Reference transport cost omitted: increase sinkhorn.max_iterations.")
 
     def short_eval(model_state, key):
         source_key, target_key, fwd_key, bwd_key, subset_key = jax.random.split(key, 5)
@@ -461,6 +490,8 @@ def get_eval_fn(get_eval_rollout_fn, env, true_dist, cfg):
                 "magnetization",
                 "correlation",
                 "sinkhorn_error",
+                "transport/mean_flips",
+                "transport/hamming",
             )
         }
         values.update(
@@ -484,6 +515,12 @@ def get_eval_fn(get_eval_rollout_fn, env, true_dist, cfg):
                 + bound_offset
             )
         if len(samples):
+            values["transport/mean_flips"] = float(
+                np.mean(np.asarray(forward["lengths"])[completed] - 1)
+            )
+            values["transport/hamming"] = float(
+                np.mean(np.sum(np.asarray(starts)[completed] != samples, axis=-1))
+            )
             values["magnetization"] = magnetization_error(samples, env.lattice_size)
             values["correlation"] = correlation_error(
                 samples, right_reference, env.lattice_size
@@ -676,6 +713,8 @@ def prefix_tb_ising_trainer(cfg, experiment_logger):
                 ("elbo", "ELBO"),
                 ("eubo", "EUBO"),
                 ("sinkhorn", "Sinkhorn"),
+                ("target/transport_sinkhorn", "Reference OT"),
+                ("transport/mean_flips", "Mean flips"),
                 ("magnetization", "Mag"),
                 ("correlation", "Corr"),
             )

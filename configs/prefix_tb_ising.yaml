@@ -7,7 +7,7 @@ env:
   beta_right: 1.2
   coupling: 1.0
 
-train_rollout_max_length: 256
+train_rollout_max_length: 50
 train_num_steps: 100000
 eval_rollout_max_length: 256
 eval_batch_size: 16384  # Evaluation sample count in the paper.
@@ -19,7 +19,7 @@ init_logZ: null
 lr: 1e-3
 logZ_lr: 1e-1
 grad_clip: 0
-reg_coef: 0.1
+reg_coef: -10.0
 use_weights: False
 
 model:
@@ -42,12 +42,12 @@ reference:
   thinning: 1024  # 2**10 updates between saved samples per chain.
 
 sinkhorn:
-  sample_size: 16384
+  sample_size: 16384  # Also caps each MCMC pool for the L -> R transport baseline.
   epsilon: 1e-3  # Absolute Hamming units, as in the paper.
   threshold: 1e-6
   max_iterations: 10000
 
-initial_state_source: uniform
+initial_state_source: buffer
 
 initial_buffer:
   num_samples: 16384

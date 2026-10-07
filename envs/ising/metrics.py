@@ -5,7 +5,6 @@ import math
 import jax
 import jax.numpy as jnp
 import numpy as np
-from ott.geometry.epsilon_scheduler import Epsilon
 from ott.geometry.geometry import Geometry
 from ott.problems.linear.linear_problem import LinearProblem
 from ott.solvers.linear.acceleration import Momentum
@@ -68,29 +67,38 @@ def sinkhorn_distance(samples, reference_samples, epsilon=.001, threshold=1e-6,
     # Binary Hamming distance without a (n, m, lattice_size**2) tensor.
     x, y = x.astype(np.float64), y.astype(np.float64)
     cost = x.sum(-1)[:, None] + y.sum(-1)[None, :] - 2 * x @ y.T
-    # At cold temperatures the two modes can be 256 flips apart. Starting at
-    # epsilon=1 can freeze incorrect masses before the dual potentials balance.
-    # Start at the actual cost scale; the final epsilon remains absolute.
-    initial_scale = max(1.0, float(cost.max()) / epsilon)
-    warmup = int(math.ceil(math.log(initial_scale) / -math.log(.95)))
+    # Solve intermediate problems before lowering epsilon. Per-iteration
+    # decay can freeze incorrect mode masses at small epsilon for cold Ising.
+    stages = np.geomspace(max(1.0, epsilon), epsilon,
+                         max(0, math.ceil(-math.log10(epsilon))) + 1)
     with jax.experimental.enable_x64():
         a = jnp.asarray(counts_x / counts_x.sum(), dtype=jnp.float64)
         b = jnp.asarray(counts_y / counts_y.sum(), dtype=jnp.float64)
-        geometry = Geometry(cost_matrix=jnp.asarray(cost), scale_cost=1.0,
-                            epsilon=Epsilon(target=epsilon, init=initial_scale, decay=.95))
-        # Start adaptive overrelaxation after epsilon reaches its target. Applying
-        # strong momentum during continuation can stall even identical measures.
-        # OTT checks one marginal internally; use a tighter internal tolerance
-        # before independently checking both marginals against `threshold`.
-        momentum_start = 10 * math.ceil((warmup + 100) / 10)
-        result = Sinkhorn(lse_mode=True, threshold=threshold * .1,
-                          momentum=Momentum(start=momentum_start, error_threshold=.1),
-                          min_iterations=min(warmup + 20, max_iterations),
-                          max_iterations=max_iterations)(LinearProblem(geometry, a=a, b=b))
+        cost = jnp.asarray(cost)
+        init = (None, None)
+        remaining = max_iterations
+        for current_epsilon in stages:
+            geometry = Geometry(cost_matrix=cost, scale_cost=1.0, epsilon=current_epsilon)
+            # Reserve iterations for the requested epsilon even if an intermediate
+            # problem converges slowly. The final stage gets all unused iterations.
+            budget = remaining if current_epsilon == epsilon else min(
+                remaining, max(1, max_iterations // len(stages)))
+            # OTT checks one marginal; tighten its tolerance before checking both.
+            result = Sinkhorn(
+                lse_mode=True, threshold=threshold * .1,
+                momentum=Momentum(start=100, error_threshold=.1),
+                max_iterations=budget,
+            )(LinearProblem(geometry, a=a, b=b), init=init)
+            remaining -= int(result.n_iters)
+            if remaining <= 0:
+                break
+            init = (result.f, result.g)
         plan = result.matrix
         error = float(jnp.maximum(jnp.abs(plan.sum(1) - a).sum(),
                                    jnp.abs(plan.sum(0) - b).sum()))
         value = float(jnp.sum(plan * geometry.cost_matrix))
-        converged = bool(result.converged) and max_iterations > warmup and error <= threshold and math.isfinite(value)
+        # Our two-marginal test is authoritative; OTT's internal tolerance is
+        # deliberately stricter and may not be reached within the budget.
+        converged = current_epsilon == epsilon and error <= threshold and math.isfinite(value)
     return {'sinkhorn': value if converged else float('nan'),
             'sinkhorn_converged': converged, 'sinkhorn_error': error}

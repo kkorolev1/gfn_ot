@@ -5,7 +5,7 @@ env:
   checkpoint: envs/sushi/checkpoint/plackett_luce_gender.npz
 
 train_rollout_max_length: 15
-train_num_steps: 100000
+train_num_steps: 150000
 eval_rollout_max_length: 100
 eval_batch_size: 50000
 
@@ -15,7 +15,7 @@ logZ_lr: 0.0
 lr: 1e-3
 grad_clip: 0
 # The shared loss currently uses exp(reg_coef + log_flow); zero disables it.
-reg_coef: 10.0
+reg_coef: 8.0
 use_weights: False
 
 model:
